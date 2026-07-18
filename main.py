@@ -77,12 +77,13 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش به همراه کوکی و ترفند تلویزیون هوشمند
+    # تنظیمات اولیه برای خواندن لیست پخش
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
         'cookiefile': 'cookies.txt',
-        'extractor_args': {'youtube': ['player_client=tv,default']}
+        'sleep_requests': 2,
+        'extractor_args': {'youtube': ['player_client=android,ios,web']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -106,14 +107,15 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو با بهترین کیفیت، استفاده از کوکی و ترفند تلویزیون
+            # تنظیمات برای دانلود ویدیو
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
                 'cookiefile': 'cookies.txt',
-                'extractor_args': {'youtube': ['player_client=tv,default']},
-                'sleep_interval': 3
+                'sleep_interval': 5,
+                'max_sleep_interval': 10,
+                'extractor_args': {'youtube': ['player_client=android,ios,web']}
             }
             
             try:
