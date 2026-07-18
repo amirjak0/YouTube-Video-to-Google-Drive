@@ -36,19 +36,3 @@ jobs:
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
         run: python main.py
-
-      - name: Commit and push changes
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # اضافه کردن فایل تاریخچه دانلودها به گیت‌هاب
-          git add -f downloaded_videos.txt
-          
-          if ! git diff-index --quiet HEAD; then
-            git commit -m "Auto-updated downloaded videos list"
-            git pull --rebase origin main
-            git push origin main
-          else
-            echo "هیچ ویدیوی جدیدی اضافه نشده است."
-          fi
