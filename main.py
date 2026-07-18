@@ -77,11 +77,12 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش به همراه کوکی
+    # تنظیمات اولیه برای خواندن لیست پخش به همراه کوکی و ترفند تلویزیون هوشمند
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
-        'cookiefile': 'cookies.txt'
+        'cookiefile': 'cookies.txt',
+        'extractor_args': {'youtube': ['player_client=tv,default']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -105,12 +106,14 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو با بهترین کیفیت و استفاده از کوکی
+            # تنظیمات برای دانلود ویدیو با بهترین کیفیت، استفاده از کوکی و ترفند تلویزیون
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
-                'cookiefile': 'cookies.txt'
+                'cookiefile': 'cookies.txt',
+                'extractor_args': {'youtube': ['player_client=tv,default']},
+                'sleep_interval': 3
             }
             
             try:
