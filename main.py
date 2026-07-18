@@ -77,8 +77,7 @@ def process_playlist():
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
-        'cookiefile': 'cookies.txt',
-        'extractor_args': {'youtube': ['player_client=android,web']}
+        'extractor_args': {'youtube': ['player_client=ios']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -105,10 +104,9 @@ def process_playlist():
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
-                'cookiefile': 'cookies.txt',
+                'extractor_args': {'youtube': ['player_client=ios']},
                 'sleep_interval': 5,
-                'max_sleep_interval': 10,
-                'extractor_args': {'youtube': ['player_client=android,web']}
+                'max_sleep_interval': 10
             }
             
             try:
