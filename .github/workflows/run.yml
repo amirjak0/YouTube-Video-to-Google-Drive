@@ -2,8 +2,8 @@ name: YouTube to Google Drive
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # اجرای خودکار هر ۶ ساعت یک‌بار
-  workflow_dispatch: # امکان اجرای دستی با دکمه
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,19 +14,21 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v1
         with:
-          fetch-depth: 0
+          deno-version: v1.x
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yt-dlp google-api-python-client google-auth-oauthlib google-auth-httplib2
+          pip install "yt-dlp[default]" google-api-python-client google-auth-oauthlib google-auth-httplib2
 
       - name: Run script
         env:
