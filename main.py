@@ -82,8 +82,7 @@ def process_playlist():
         'extract_flat': 'in_playlist',
         'quiet': True,
         'cookiefile': 'cookies.txt',
-        'sleep_requests': 2,
-        'extractor_args': {'youtube': ['player_client=android,ios,web']}
+        'extractor_args': {'youtube': ['player_client=android,web']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -115,7 +114,7 @@ def process_playlist():
                 'cookiefile': 'cookies.txt',
                 'sleep_interval': 5,
                 'max_sleep_interval': 10,
-                'extractor_args': {'youtube': ['player_client=android,ios,web']}
+                'extractor_args': {'youtube': ['player_client=android,web']}
             }
             
             try:
