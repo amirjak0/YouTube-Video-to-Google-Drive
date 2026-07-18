@@ -9,39 +9,23 @@ from google.auth.transport.requests import Request
 # تنظیمات لاگ‌گیری
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-TRACKING_FILE = 'downloaded_videos.txt'
 DOWNLOAD_FOLDER = 'downloads'
 
 def setup_environment():
-    # ساخت پوشه دانلود و فایل ذخیره شناسه‌ها اگر وجود نداشته باشند
+    # ساخت پوشه دانلود اگر وجود نداشته باشد
     if not os.path.exists(DOWNLOAD_FOLDER):
         os.makedirs(DOWNLOAD_FOLDER)
-    if not os.path.exists(TRACKING_FILE):
-        with open(TRACKING_FILE, 'w') as f:
-            pass
 
-def get_downloaded_ids():
-    # خواندن لیست ویدیوهایی که قبلا دانلود شده‌اند
-    with open(TRACKING_FILE, 'r') as f:
-        return set(line.strip() for line in f)
-
-def save_downloaded_id(video_id):
-    # ذخیره شناسه ویدیوی جدید در فایل
-    with open(TRACKING_FILE, 'a') as f:
-        f.write(f"{video_id}\n")
-
-def upload_to_gdrive(file_path):
+def get_gdrive_service():
     # دریافت اطلاعات ورود به گوگل درایو
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
     client_secret = os.environ.get("GDRIVE_CLIENT_SECRET")
     refresh_token = os.environ.get("GDRIVE_REFRESH_TOKEN")
-    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
-
-    if not all([client_id, client_secret, refresh_token, folder_id]):
+    
+    if not all([client_id, client_secret, refresh_token]):
         logging.warning("اطلاعات گوگل درایو یافت نشد.")
-        return False
+        return None
 
-    logging.info(f"در حال آپلود: {os.path.basename(file_path)}")
     try:
         creds = Credentials(
             token=None,
@@ -52,7 +36,25 @@ def upload_to_gdrive(file_path):
         )
         creds.refresh(Request())
         service = build('drive', 'v3', credentials=creds)
+        return service
+    except Exception as e:
+        logging.error(f"خطا در اتصال به گوگل درایو: {e}")
+        return None
 
+def video_exists_in_gdrive(service, folder_id, video_id):
+    # بررسی وجود ویدیو در گوگل درایو بر اساس شناسه
+    try:
+        query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        items = results.get('files', [])
+        return len(items) > 0
+    except Exception as e:
+        logging.error(f"خطا در جستجوی فایل در درایو: {e}")
+        return False
+
+def upload_to_gdrive(service, folder_id, file_path):
+    logging.info(f"در حال آپلود: {os.path.basename(file_path)}")
+    try:
         file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
         media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
         
@@ -64,13 +66,16 @@ def upload_to_gdrive(file_path):
         return False
 
 def process_playlist():
-    # دریافت لینک لیست پخش
     playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL")
-    if not playlist_url:
-        logging.error("لینک لیست پخش یافت نشد.")
+    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
+
+    if not playlist_url or not folder_id:
+        logging.error("لینک لیست پخش یا شناسه پوشه یافت نشد.")
         return
 
-    downloaded_ids = get_downloaded_ids()
+    service = get_gdrive_service()
+    if not service:
+        return
 
     # تنظیمات اولیه برای خواندن لیست پخش
     ydl_opts = {
@@ -91,16 +96,18 @@ def process_playlist():
                 continue
             
             video_id = video.get('id')
-            if video_id in downloaded_ids:
-                logging.info(f"ویدیو تکراری است و رد شد: {video_id}")
+            
+            # بررسی اینکه آیا ویدیو قبلا در درایو آپلود شده است یا خیر
+            if video_exists_in_gdrive(service, folder_id, video_id):
+                logging.info(f"ویدیو از قبل در درایو موجود است و رد شد: {video_id}")
                 continue
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو با بهترین کیفیت
+            # تنظیمات برای دانلود ویدیو با بهترین کیفیت و قرار دادن شناسه در نام فایل
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s.%(ext)s',
+                'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
             }
             
@@ -109,9 +116,8 @@ def process_playlist():
                     info = dl.extract_info(video.get('url') or video_id, download=True)
                     file_path = dl.prepare_filename(info)
                     
-                    # اگر آپلود موفق بود، شناسه را ذخیره کن و فایل را پاک کن
-                    if upload_to_gdrive(file_path):
-                        save_downloaded_id(video_id)
+                    # اگر آپلود موفق بود، فایل را پاک کن
+                    if upload_to_gdrive(service, folder_id, file_path):
                         os.remove(file_path)
                         logging.info("فایل از روی سرور پاک شد تا فضا اشغال نشود.")
             except Exception as e:
