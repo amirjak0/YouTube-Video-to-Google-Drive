@@ -12,12 +12,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 DOWNLOAD_FOLDER = 'downloads'
 
 def setup_environment():
-    # ساخت پوشه دانلود اگر وجود نداشته باشد
     if not os.path.exists(DOWNLOAD_FOLDER):
         os.makedirs(DOWNLOAD_FOLDER)
 
 def get_gdrive_service():
-    # دریافت اطلاعات ورود به گوگل درایو
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
     client_secret = os.environ.get("GDRIVE_CLIENT_SECRET")
     refresh_token = os.environ.get("GDRIVE_REFRESH_TOKEN")
@@ -42,7 +40,6 @@ def get_gdrive_service():
         return None
 
 def video_exists_in_gdrive(service, folder_id, video_id):
-    # بررسی وجود ویدیو در گوگل درایو بر اساس شناسه
     try:
         query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
@@ -77,7 +74,6 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
@@ -99,14 +95,12 @@ def process_playlist():
             
             video_id = video.get('id')
             
-            # بررسی اینکه آیا ویدیو قبلا در درایو آپلود شده است یا خیر
             if video_exists_in_gdrive(service, folder_id, video_id):
                 logging.info(f"ویدیو از قبل در درایو موجود است و رد شد: {video_id}")
                 continue
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
@@ -122,7 +116,6 @@ def process_playlist():
                     info = dl.extract_info(video.get('url') or video_id, download=True)
                     file_path = dl.prepare_filename(info)
                     
-                    # اگر آپلود موفق بود، فایل را پاک کن
                     if upload_to_gdrive(service, folder_id, file_path):
                         os.remove(file_path)
                         logging.info("فایل از روی سرور پاک شد تا فضا اشغال نشود.")
