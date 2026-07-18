@@ -1,3 +1,27 @@
+# ==============================================================================
+# 📝 یادداشت‌های فنی و تاریخچه آزمون و خطاها (برای برنامه‌نویسان آینده):
+# ------------------------------------------------------------------------------
+# ۱. مشکل Watch Later: این لیست پخش خصوصی است و برنامه بدون اهراز هویت سنگین به آن دسترسی ندارد.
+#    راه حل: استفاده از یک لیست پخش عمومی یا Unlisted.
+#
+# ۲. مشکل GitHub Actions & State: فایل downloaded_videos.txt بعد از اتمام هر اجرای گیت‌هاب حذف می‌شد.
+#    راه حل: بررسی مستقیم داخل پوشه Google Drive برای پیدا کردن فایل‌ها بر اساس شناسه (video_id).
+#
+# ۳. مسدودسازی آی‌پی‌های گیت‌هاب توسط گوگل: سرورهای گیت‌هاب به دلیل حجم درخواست بالا بلاک می‌شوند (خطای bot).
+#    راه حل: استفاده از فایل cookies.txt صادر شده از مرورگر واقعی کاربر.
+#
+# ۴. خطای نام فایل کوکی: فایل کوکی در ویندوز به صورت cookies.txt.txt ذخیره شده بود که برنامه آن را پیدا نمی‌کرد.
+#    راه حل: اصلاح نام فایل به cookies.txt در مخزن گیت‌هاب.
+#
+# ۵. تله کلاینت ios: شبیه‌سازی کلاینت ios اگرچه برخی چالش‌ها را دور می‌زند، اما کوکی‌ها را کاملاً نادیده می‌گیرد.
+#    راه حل: استفاده از کلاینت‌های android, web, mweb که با کوکی‌ها سازگار هستند.
+#
+# ۶. چالش جاوااسکریپت (EJS): یوتیوب برای دانلود ویدیوها چالش n-parameter قرار داده که نیاز به موتور JS دارد.
+#    موتور Deno به طور پیش‌فرض توسط yt-dlp استفاده می‌شود اما در گیت‌هاب اکشنز به درستی در PATH قرار نمی‌گیرد.
+#    راه حل نهایی: نصب نسخه "yt-dlp[default]" و اجبار برنامه به استفاده از Node.js (که پیش‌فرض در گیت‌هاب نصب است)
+#    از طریق تنظیم کردن پارامتر 'js_runtimes': {'node': {}} در تنظیمات دانلود.
+# ==============================================================================
+
 import os
 import logging
 import yt_dlp
@@ -12,10 +36,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 DOWNLOAD_FOLDER = 'downloads'
 
 def setup_environment():
+    # ساخت پوشه دانلود اگر وجود نداشته باشد
     if not os.path.exists(DOWNLOAD_FOLDER):
         os.makedirs(DOWNLOAD_FOLDER)
 
 def get_gdrive_service():
+    # دریافت اطلاعات ورود به گوگل درایو
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
     client_secret = os.environ.get("GDRIVE_CLIENT_SECRET")
     refresh_token = os.environ.get("GDRIVE_REFRESH_TOKEN")
@@ -40,6 +66,7 @@ def get_gdrive_service():
         return None
 
 def video_exists_in_gdrive(service, folder_id, video_id):
+    # بررسی وجود ویدیو در گوگل درایو بر اساس شناسه
     try:
         query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
@@ -74,10 +101,13 @@ def process_playlist():
     if not service:
         return
 
+    # تنظیمات اولیه برای خواندن لیست پخش (استفاده از کوکی‌ها و فعال کردن موتور Node.js گیت‌هاب)
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
-        'extractor_args': {'youtube': ['player_client=ios']}
+        'cookiefile': 'cookies.txt',
+        'js_runtimes': {'node': {}},
+        'extractor_args': {'youtube': ['player_client=android,web,mweb']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -94,17 +124,21 @@ def process_playlist():
             
             video_id = video.get('id')
             
+            # بررسی اینکه آیا ویدیو قبلا در درایو آپلود شده است یا خیر
             if video_exists_in_gdrive(service, folder_id, video_id):
                 logging.info(f"ویدیو از قبل در درایو موجود است و رد شد: {video_id}")
                 continue
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
+            # تنظیمات برای دانلود ویدیو
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
-                'extractor_args': {'youtube': ['player_client=ios']},
+                'cookiefile': 'cookies.txt',
+                'js_runtimes': {'node': {}},
+                'extractor_args': {'youtube': ['player_client=android,web,mweb']},
                 'sleep_interval': 5,
                 'max_sleep_interval': 10
             }
@@ -114,6 +148,7 @@ def process_playlist():
                     info = dl.extract_info(video.get('url') or video_id, download=True)
                     file_path = dl.prepare_filename(info)
                     
+                    # اگر آپلود موفق بود، فایل را پاک کن
                     if upload_to_gdrive(service, folder_id, file_path):
                         os.remove(file_path)
                         logging.info("فایل از روی سرور پاک شد تا فضا اشغال نشود.")
