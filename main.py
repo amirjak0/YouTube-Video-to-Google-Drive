@@ -77,10 +77,11 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش
+    # تنظیمات اولیه برای خواندن لیست پخش به همراه کوکی
     ydl_opts = {
         'extract_flat': 'in_playlist',
-        'quiet': True
+        'quiet': True,
+        'cookiefile': 'cookies.txt'
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -104,11 +105,12 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو با بهترین کیفیت و قرار دادن شناسه در نام فایل
+            # تنظیمات برای دانلود ویدیو با بهترین کیفیت و استفاده از کوکی
             download_opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mp4',
+                'cookiefile': 'cookies.txt'
             }
             
             try:
