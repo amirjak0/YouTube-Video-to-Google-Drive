@@ -24,6 +24,7 @@
 
 import os
 import logging
+import mimetypes
 import yt_dlp
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -80,7 +81,13 @@ def upload_to_gdrive(service, folder_id, file_path):
     logging.info(f"در حال آپلود: {os.path.basename(file_path)}")
     try:
         file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
-        media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
+        
+        # تشخیص خودکار نوع فایل (mkv, mp4 و غیره) برای آپلود صحیح در درایو
+        mime_type, _ = mimetypes.guess_type(file_path)
+        if mime_type is None:
+            mime_type = 'application/octet-stream'
+            
+        media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
         
         file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         logging.info(f"آپلود موفق! شناسه فایل در درایو: {file.get('id')}")
@@ -131,11 +138,11 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو
+            # تنظیمات برای دانلود ویدیو (4K روان بدون کدک AV1)
             download_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'format': 'bestvideo[vcodec!*=av01]+bestaudio/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
-                'merge_output_format': 'mp4',
+                'merge_output_format': 'mkv',
                 'cookiefile': 'cookies.txt',
                 'js_runtimes': {'node': {}},
                 'extractor_args': {'youtube': ['player_client=android,web,mweb']},
