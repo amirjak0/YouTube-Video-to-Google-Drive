@@ -80,7 +80,6 @@ def upload_to_gdrive(service, folder_id, file_path):
         error_count = 0
         while response is None:
             try:
-                # num_retries به تنهایی خطاهای SSL را هندل نمی‌کند، بنابراین از try-except استفاده می‌کنیم
                 status, response = request.next_chunk(num_retries=3)
                 if status:
                     logging.info(f"پیشرفت آپلود درایو: {int(status.progress() * 100)}%")
@@ -218,32 +217,29 @@ def process_and_translate_subtitle(video_path, srt_path):
     return fa_srt_path
 
 def embed_subtitle_to_video(video_path, sub_path):
-    logging.info("در حال حک کردن دائمی (Hard-sub) زیرنویس فارسی روی تصویر ویدیو...")
-    output_path = video_path.rsplit('.', 1)[0] + '_subbed.mp4'
+    logging.info("در حال افزودن زیرنویس فارسی به عنوان یک ترک قابل انتخاب (Soft-sub)...")
+    # تغییر فرمت خروجی به mkv برای پشتیبانی عالی از زیرنویس‌های جاسازی شده
+    output_path = video_path.rsplit('.', 1)[0] + '_subbed.mkv'
     
-    temp_sub = "temp_sub.srt"
-    if os.path.exists(temp_sub):
-        os.remove(temp_sub)
-        
     try:
-        os.rename(sub_path, temp_sub)
-        
         cmd = [
-            'ffmpeg', '-y', '-i', video_path,
-            '-vf', f"subtitles={temp_sub}:force_style='Fontname=Nazli,Fontsize=18,Outline=1.5,Shadow=1'",
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-            '-c:a', 'copy',
+            'ffmpeg', '-y', 
+            '-i', video_path,       # ورودی اول: ویدیو
+            '-i', sub_path,         # ورودی دوم: زیرنویس فارسی
+            '-map', '0:v',          # کپی کردن تصویر از فایل اول
+            '-map', '0:a',          # کپی کردن صدا از فایل اول
+            '-map', '1:s',          # کپی کردن زیرنویس از فایل دوم
+            '-c', 'copy',           # کپی مستقیم بدون رندر مجدد (سرعت بالا و بدون افت کیفیت)
+            '-c:s', 'srt',          # تنظیم فرمت زیرنویس
+            '-metadata:s:s:0', 'language=per',   # تنظیم زبان زیرنویس به فارسی
+            '-metadata:s:s:0', 'title=Persian',  # عنوانی که در مکس پلیر نمایش داده می‌شود
             output_path
         ]
         
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.rename(temp_sub, sub_path)
         return output_path
     except Exception as e:
-        logging.error(f"خطا در حک کردن زیرنویس: {e}")
-        if os.path.exists(temp_sub):
-            try: os.rename(temp_sub, sub_path)
-            except: pass
+        logging.error(f"خطا در افزودن زیرنویس: {e}")
         return video_path
 
 # ==========================================
@@ -311,7 +307,7 @@ def process_playlist():
                     if os.path.exists(expected_sub_path):
                         # ۱. همگام‌سازی و ترجمه خودکار زیرنویس به فارسی
                         fa_sub_path = process_and_translate_subtitle(base_file_path, expected_sub_path)
-                        # ۲. حک کردن دائمی زیرنویس روی خود ویدیو
+                        # ۲. افزودن زیرنویس به عنوان ترک مجزا (Soft-sub)
                         final_video_path = embed_subtitle_to_video(base_file_path, fa_sub_path)
                     else:
                         logging.warning("زیرنویس انگلیسی برای این ویدیو یافت نشد. ویدیو بدون زیرنویس پردازش می‌شود.")
