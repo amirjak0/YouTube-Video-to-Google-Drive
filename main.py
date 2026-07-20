@@ -5,7 +5,6 @@ import logging
 import mimetypes
 import yt_dlp
 import re
-import subprocess
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -24,35 +23,7 @@ def setup_environment():
         os.makedirs(DOWNLOAD_FOLDER)
 
 # ==========================================
-# بررسی وضعیت فایل کوکی‌ها (برای دیباگ)
-# ==========================================
-def check_cookies_file():
-    cookie_file = 'cookies.txt'
-    logging.info("در حال بررسی وضعیت فایل کوکی‌ها...")
-    
-    if os.path.exists(cookie_file):
-        # دریافت زمان آخرین بروزرسانی فایل
-        mod_time = os.path.getmtime(cookie_file)
-        formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mod_time))
-        logging.info(f"✅ فایل '{cookie_file}' یافت شد. آخرین بروزرسانی: {formatted_time}")
-        
-        # خواندن و چاپ محتوای فایل
-        try:
-            with open(cookie_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                logging.info(f"--- محتوای فایل {cookie_file} ---\n{content}\n-----------------------------------")
-                
-                if not content.strip():
-                    logging.warning("⚠️ فایل کوکی‌ها خالی است!")
-                elif "# Netscape HTTP Cookie File" not in content:
-                    logging.warning("⚠️ فرمت فایل کوکی‌ها به نظر اشتباه می‌رسد! باید با '# Netscape HTTP Cookie File' شروع شود.")
-        except Exception as e:
-            logging.error(f"❌ خطا در خواندن فایل {cookie_file}: {e}")
-    else:
-        logging.error(f"❌ فایل '{cookie_file}' در مسیر فعلی ({os.getcwd()}) یافت نشد! این موضوع باعث خطای 429 یا مسدود شدن توسط یوتیوب می‌شود.")
-
-# ==========================================
-# بخش ارتباط با گوگل درایو (بهبود یافته با آپلود تکه‌تکه)
+# بخش ارتباط با گوگل درایو
 # ==========================================
 def get_gdrive_service():
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
@@ -70,7 +41,6 @@ def get_gdrive_service():
             client_id=client_id, client_secret=client_secret
         )
         creds.refresh(Request())
-        # غیرفعال کردن کش برای جلوگیری از هشدار file_cache
         return build('drive', 'v3', credentials=creds, cache_discovery=False)
     except Exception as e:
         logging.error(f"خطا در اتصال به گوگل درایو: {e}")
@@ -78,7 +48,6 @@ def get_gdrive_service():
 
 def video_exists_in_gdrive(service, folder_id, video_id):
     query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
-    # تلاش مجدد در صورت برخورد با اتصالات منقضی شده (Stale Connection)
     for attempt in range(3):
         try:
             results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute(num_retries=3)
@@ -92,13 +61,11 @@ def upload_to_gdrive(service, folder_id, file_path):
     logging.info(f"در حال آپلود فایل به گوگل درایو: {os.path.basename(file_path)}")
     try:
         mime_type, _ = mimetypes.guess_type(file_path)
-        
-        # تقسیم فایل به بخش‌های ۵ مگابایتی برای پایداری در فایل‌های حجیم
         media = MediaFileUpload(
             file_path, 
             mimetype=mime_type or 'application/octet-stream', 
             resumable=True,
-            chunksize=5 * 1024 * 1024 # ۵ مگابایت
+            chunksize=5 * 1024 * 1024
         )
         
         file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
@@ -111,17 +78,16 @@ def upload_to_gdrive(service, folder_id, file_path):
                 status, response = request.next_chunk(num_retries=3)
                 if status:
                     logging.info(f"پیشرفت آپلود درایو: {int(status.progress() * 100)}%")
-                error_count = 0  # ریست کردن شمارنده خطا در صورت موفقیت
+                error_count = 0
             except Exception as e:
                 error_count += 1
                 logging.warning(f"خطا در آپلود بخش (تلاش {error_count}): {e}")
                 if error_count > 5:
                     logging.error("تعداد خطاهای آپلود بیش از حد مجاز شد. آپلود متوقف می‌شود.")
                     return False
-                # صبر کردن با استراتژی Exponential Backoff قبل از تلاش مجدد
                 time.sleep(2 ** error_count)
                 
-        logging.info(f"آپلود با موفقیت انجام شد! شناسه فایل در گوگل درایو: {response.get('id')}")
+        logging.info(f"آپلود با موفقیت انجام شد! شناسه فایل: {response.get('id')}")
         return True
     except Exception as e:
         logging.error(f"خطا در آماده‌سازی آپلود فایل: {e}")
@@ -212,8 +178,6 @@ def process_and_translate_subtitle(video_path, srt_path):
     if whisper_data:
         scale, offset = calculate_sync_params(cleaned_blocks, whisper_data)
         logging.info(f"آفست زمانی محاسبه شده: {offset:+.2f} ثانیه")
-    else:
-        logging.warning("زمان‌بندی صدا با Whisper انجام نشد. سینک کردن نادیده گرفته می‌شود.")
 
     translator = GoogleTranslator(source='en', target='fa')
     synced_fa_blocks = []
@@ -243,32 +207,6 @@ def process_and_translate_subtitle(video_path, srt_path):
             f.write(f"{i}\n{start_str} --> {end_str}\n{block['text']}\n\n")
             
     return fa_srt_path
-
-def embed_subtitle_to_video(video_path, sub_path):
-    logging.info("در حال افزودن زیرنویس فارسی به عنوان یک ترک قابل انتخاب (Soft-sub)...")
-    # تغییر فرمت خروجی به mkv برای پشتیبانی عالی از زیرنویس‌های جاسازی شده
-    output_path = video_path.rsplit('.', 1)[0] + '_subbed.mkv'
-    
-    try:
-        cmd = [
-            'ffmpeg', '-y', 
-            '-i', video_path,       # ورودی اول: ویدیو
-            '-i', sub_path,         # ورودی دوم: زیرنویس فارسی
-            '-map', '0:v',          # کپی کردن تصویر از فایل اول
-            '-map', '0:a',          # کپی کردن صدا از فایل اول
-            '-map', '1:s',          # کپی کردن زیرنویس از فایل دوم
-            '-c', 'copy',           # کپی مستقیم بدون رندر مجدد (سرعت بالا و بدون افت کیفیت)
-            '-c:s', 'srt',          # تنظیم فرمت زیرنویس
-            '-metadata:s:s:0', 'language=per',   # تنظیم زبان زیرنویس به فارسی
-            '-metadata:s:s:0', 'title=Persian',  # عنوانی که در مکس پلیر نمایش داده می‌شود
-            output_path
-        ]
-        
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return output_path
-    except Exception as e:
-        logging.error(f"خطا در افزودن زیرنویس: {e}")
-        return video_path
 
 # ==========================================
 # کنترل‌کننده اصلی و فرآیند پروژه
@@ -330,21 +268,25 @@ def process_playlist():
                     base_file_path = dl.prepare_filename(info)
                     
                     expected_sub_path = base_file_path.rsplit('.', 1)[0] + '.en.srt'
-                    final_video_path = base_file_path
+                    fa_sub_path = None
                     
                     if os.path.exists(expected_sub_path):
-                        # ۱. همگام‌سازی و ترجمه خودکار زیرنویس به فارسی
+                        # همگام‌سازی و ترجمه خودکار زیرنویس به فارسی
                         fa_sub_path = process_and_translate_subtitle(base_file_path, expected_sub_path)
-                        # ۲. افزودن زیرنویس به عنوان ترک مجزا (Soft-sub)
-                        final_video_path = embed_subtitle_to_video(base_file_path, fa_sub_path)
                     else:
-                        logging.warning("زیرنویس انگلیسی برای این ویدیو یافت نشد. ویدیو بدون زیرنویس پردازش می‌شود.")
+                        logging.warning("زیرنویس انگلیسی برای این ویدیو یافت نشد.")
 
-                    # آپلود فایل نهایی به گوگل درایو
-                    if upload_to_gdrive(service, folder_id, final_video_path):
+                    # آپلود ویدیو اصلی به گوگل درایو
+                    if upload_to_gdrive(service, folder_id, base_file_path):
+                        
+                        # آپلود فایل زیرنویس SRT به صورت جداگانه
+                        if fa_sub_path and os.path.exists(fa_sub_path):
+                            logging.info("در حال آپلود فایل متنی زیرنویس...")
+                            upload_to_gdrive(service, folder_id, fa_sub_path)
+                            
                         # پاک کردن فایل‌های موقت روی سرور گیت‌هاب
-                        temp_files = [base_file_path, final_video_path, expected_sub_path]
-                        if 'fa_sub_path' in locals() and os.path.exists(fa_sub_path):
+                        temp_files = [base_file_path, expected_sub_path]
+                        if fa_sub_path:
                             temp_files.append(fa_sub_path)
                         
                         for f in temp_files:
@@ -355,5 +297,4 @@ def process_playlist():
 
 if __name__ == "__main__":
     setup_environment()
-    check_cookies_file()  # <--- فراخوانی تابع بررسی کوکی‌ها
     process_playlist()
