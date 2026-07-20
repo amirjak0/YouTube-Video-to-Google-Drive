@@ -24,6 +24,34 @@ def setup_environment():
         os.makedirs(DOWNLOAD_FOLDER)
 
 # ==========================================
+# بررسی وضعیت فایل کوکی‌ها (برای دیباگ)
+# ==========================================
+def check_cookies_file():
+    cookie_file = 'cookies.txt'
+    logging.info("در حال بررسی وضعیت فایل کوکی‌ها...")
+    
+    if os.path.exists(cookie_file):
+        # دریافت زمان آخرین بروزرسانی فایل
+        mod_time = os.path.getmtime(cookie_file)
+        formatted_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(mod_time))
+        logging.info(f"✅ فایل '{cookie_file}' یافت شد. آخرین بروزرسانی: {formatted_time}")
+        
+        # خواندن و چاپ محتوای فایل
+        try:
+            with open(cookie_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                logging.info(f"--- محتوای فایل {cookie_file} ---\n{content}\n-----------------------------------")
+                
+                if not content.strip():
+                    logging.warning("⚠️ فایل کوکی‌ها خالی است!")
+                elif "# Netscape HTTP Cookie File" not in content:
+                    logging.warning("⚠️ فرمت فایل کوکی‌ها به نظر اشتباه می‌رسد! باید با '# Netscape HTTP Cookie File' شروع شود.")
+        except Exception as e:
+            logging.error(f"❌ خطا در خواندن فایل {cookie_file}: {e}")
+    else:
+        logging.error(f"❌ فایل '{cookie_file}' در مسیر فعلی ({os.getcwd()}) یافت نشد! این موضوع باعث خطای 429 یا مسدود شدن توسط یوتیوب می‌شود.")
+
+# ==========================================
 # بخش ارتباط با گوگل درایو (بهبود یافته با آپلود تکه‌تکه)
 # ==========================================
 def get_gdrive_service():
@@ -327,4 +355,5 @@ def process_playlist():
 
 if __name__ == "__main__":
     setup_environment()
+    check_cookies_file()  # <--- فراخوانی تابع بررسی کوکی‌ها
     process_playlist()
