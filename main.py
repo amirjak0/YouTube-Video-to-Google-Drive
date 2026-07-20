@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import logging
 import mimetypes
 import yt_dlp
@@ -41,19 +42,23 @@ def get_gdrive_service():
             client_id=client_id, client_secret=client_secret
         )
         creds.refresh(Request())
-        return build('drive', 'v3', credentials=creds)
+        # غیرفعال کردن کش برای جلوگیری از هشدار file_cache
+        return build('drive', 'v3', credentials=creds, cache_discovery=False)
     except Exception as e:
         logging.error(f"خطا در اتصال به گوگل درایو: {e}")
         return None
 
 def video_exists_in_gdrive(service, folder_id, video_id):
-    try:
-        query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
-        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-        return len(results.get('files', [])) > 0
-    except Exception as e:
-        logging.error(f"خطا در جستجوی فایل در درایو: {e}")
-        return False
+    query = f"'{folder_id}' in parents and name contains '{video_id}' and trashed=false"
+    # تلاش مجدد در صورت برخورد با اتصالات منقضی شده (Stale Connection)
+    for attempt in range(3):
+        try:
+            results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute(num_retries=3)
+            return len(results.get('files', [])) > 0
+        except Exception as e:
+            logging.warning(f"خطا در جستجوی فایل در درایو (تلاش {attempt + 1}): {e}")
+            time.sleep(2)
+    return False
 
 def upload_to_gdrive(service, folder_id, file_path):
     logging.info(f"در حال آپلود فایل به گوگل درایو: {os.path.basename(file_path)}")
@@ -72,15 +77,27 @@ def upload_to_gdrive(service, folder_id, file_path):
         request = service.files().create(body=file_metadata, media_body=media, fields='id')
         
         response = None
+        error_count = 0
         while response is None:
-            status, response = request.next_chunk()
-            if status:
-                logging.info(f"پیشرفت آپلود درایو: {int(status.progress() * 100)}%")
+            try:
+                # num_retries به تنهایی خطاهای SSL را هندل نمی‌کند، بنابراین از try-except استفاده می‌کنیم
+                status, response = request.next_chunk(num_retries=3)
+                if status:
+                    logging.info(f"پیشرفت آپلود درایو: {int(status.progress() * 100)}%")
+                error_count = 0  # ریست کردن شمارنده خطا در صورت موفقیت
+            except Exception as e:
+                error_count += 1
+                logging.warning(f"خطا در آپلود بخش (تلاش {error_count}): {e}")
+                if error_count > 5:
+                    logging.error("تعداد خطاهای آپلود بیش از حد مجاز شد. آپلود متوقف می‌شود.")
+                    return False
+                # صبر کردن با استراتژی Exponential Backoff قبل از تلاش مجدد
+                time.sleep(2 ** error_count)
                 
         logging.info(f"آپلود با موفقیت انجام شد! شناسه فایل در گوگل درایو: {response.get('id')}")
         return True
     except Exception as e:
-        logging.error(f"خطا در آپلود فایل: {e}")
+        logging.error(f"خطا در آماده‌سازی آپلود فایل: {e}")
         return False
 
 # ==========================================
