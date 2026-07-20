@@ -2,8 +2,8 @@ name: YouTube to Google Drive
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # اجرای خودکار هر ۶ ساعت یک‌بار
-  workflow_dispatch: # امکان اجرای دستی از تب Actions در گیت‌هاب
+    - cron: '0 */6 * * *' # اجرای هر ۶ ساعت یک بار
+  workflow_dispatch: # امکان اجرای دستی
 
 permissions:
   contents: write
@@ -15,15 +15,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg
+      - name: Install FFmpeg & Persian Fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-farsiweb
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # ارتقا به نسخه پایداری که هشدارهای کتابخانه‌های گوگل را برطرف می‌کند
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
