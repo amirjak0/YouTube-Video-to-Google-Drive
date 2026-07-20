@@ -1,4 +1,6 @@
-yt-dlp
+yt-dlp[default]
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+faster-whisper
+deep-translator
