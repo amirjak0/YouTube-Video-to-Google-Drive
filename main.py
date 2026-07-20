@@ -23,7 +23,7 @@ def setup_environment():
         os.makedirs(DOWNLOAD_FOLDER)
 
 # ==========================================
-# بخش ارتباط با گوگل درایو
+# بخش ارتباط با گوگل درایو (بهبود یافته با آپلود تکه‌تکه)
 # ==========================================
 def get_gdrive_service():
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
@@ -59,10 +59,25 @@ def upload_to_gdrive(service, folder_id, file_path):
     logging.info(f"در حال آپلود فایل به گوگل درایو: {os.path.basename(file_path)}")
     try:
         mime_type, _ = mimetypes.guess_type(file_path)
-        media = MediaFileUpload(file_path, mimetype=mime_type or 'application/octet-stream', resumable=True)
+        
+        # تقسیم فایل به بخش‌های ۵ مگابایتی برای پایداری در فایل‌های حجیم
+        media = MediaFileUpload(
+            file_path, 
+            mimetype=mime_type or 'application/octet-stream', 
+            resumable=True,
+            chunksize=5 * 1024 * 1024 # ۵ مگابایت
+        )
+        
         file_metadata = {'name': os.path.basename(file_path), 'parents': [folder_id]}
-        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        logging.info(f"آپلود با موفقیت انجام شد! شناسه فایل در گوگل درایو: {file.get('id')}")
+        request = service.files().create(body=file_metadata, media_body=media, fields='id')
+        
+        response = None
+        while response is None:
+            status, response = request.next_chunk()
+            if status:
+                logging.info(f"پیشرفت آپلود درایو: {int(status.progress() * 100)}%")
+                
+        logging.info(f"آپلود با موفقیت انجام شد! شناسه فایل در گوگل درایو: {response.get('id')}")
         return True
     except Exception as e:
         logging.error(f"خطا در آپلود فایل: {e}")
@@ -116,13 +131,13 @@ def calculate_sync_params(srt_blocks, whisper_data):
     if not diffs:
         return 1.0, 0.0
         
-    global_offset = Counter(diffs).most_common(1)[0][0]
+    counter = Counter(diffs)
+    global_offset = counter.most_common(1)[0][0]
     return 1.0, global_offset
 
 def process_and_translate_subtitle(video_path, srt_path):
     logging.info("شروع پردازش، همگام‌سازی و ترجمه زیرنویس...")
     
-    # 1. خواندن و پاکسازی زیرنویس خام انگلیسی
     blocks = read_srt(srt_path)
     cleaned_blocks = []
     for b in blocks:
@@ -134,7 +149,6 @@ def process_and_translate_subtitle(video_path, srt_path):
         logging.warning("متنی پس از پاکسازی زیرنویس باقی نماند.")
         return srt_path
 
-    # 2. اجرای Whisper برای استخراج زمان‌بندی دقیق صدا روی CPU سرور گیت‌هاب
     logging.info("در حال اجرای Whisper برای استخراج زمان‌بندی صدا...")
     try:
         model = WhisperModel("base", device="cpu", compute_type="int8")
@@ -150,7 +164,6 @@ def process_and_translate_subtitle(video_path, srt_path):
         logging.error(f"خطا در Whisper: {e}. از زیرنویس اصلی بدون سینک استفاده می‌شود.")
         whisper_data = []
 
-    # 3. محاسبه آفست زمانی
     scale, offset = 1.0, 0.0
     if whisper_data:
         scale, offset = calculate_sync_params(cleaned_blocks, whisper_data)
@@ -158,7 +171,6 @@ def process_and_translate_subtitle(video_path, srt_path):
     else:
         logging.warning("زمان‌بندی صدا با Whisper انجام نشد. سینک کردن نادیده گرفته می‌شود.")
 
-    # 4. ترجمه خط به خط به فارسی
     translator = GoogleTranslator(source='en', target='fa')
     synced_fa_blocks = []
     
@@ -175,12 +187,10 @@ def process_and_translate_subtitle(video_path, srt_path):
             
         synced_fa_blocks.append({'start': start_sec, 'end': end_sec, 'text': fa_text})
 
-    # جلوگیری از تداخل زمانی زیرنویس‌ها
     for i in range(len(synced_fa_blocks) - 1):
         if synced_fa_blocks[i]['end'] >= synced_fa_blocks[i+1]['start']:
             synced_fa_blocks[i]['end'] = synced_fa_blocks[i+1]['start'] - 0.05
 
-    # 5. ذخیره زیرنویس فارسی نهایی
     fa_srt_path = srt_path.replace('.en.srt', '_fa.srt').replace('.srt', '_fa.srt')
     with open(fa_srt_path, 'w', encoding='utf-8') as f:
         for i, block in enumerate(synced_fa_blocks, start=1):
@@ -201,12 +211,11 @@ def embed_subtitle_to_video(video_path, sub_path):
     try:
         os.rename(sub_path, temp_sub)
         
-        # اجرای FFmpeg برای چسباندن دائمی زیرنویس با فونت فارسی Nazli
         cmd = [
             'ffmpeg', '-y', '-i', video_path,
             '-vf', f"subtitles={temp_sub}:force_style='Fontname=Nazli,Fontsize=18,Outline=1.5,Shadow=1'",
             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22',
-            '-c:a', 'copy', # صدا با کیفیت اصلی و بدون فشرده‌سازی کپی می‌شود
+            '-c:a', 'copy',
             output_path
         ]
         
