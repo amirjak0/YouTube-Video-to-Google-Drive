@@ -20,6 +20,9 @@
 #    موتور Deno به طور پیش‌فرض توسط yt-dlp استفاده می‌شود اما در گیت‌هاب اکشنز به درستی در PATH قرار نمی‌گیرد.
 #    راه حل نهایی: نصب نسخه "yt-dlp[default]" و اجبار برنامه به استفاده از Node.js (که پیش‌فرض در گیت‌هاب نصب است)
 #    از طریق تنظیم کردن پارامتر 'js_runtimes': {'node': {}} در تنظیمات دانلود.
+#
+# ۷. خطای Fragment not found: یوتیوب دانلودهای تکه‌تکه (HLS/m3u8) را برای سرورها مسدود می‌کند.
+#    راه حل: اجبار به دانلود یکپارچه با پروتکل HTTP از طریق تنظیمات format.
 # ==============================================================================
 
 import os
@@ -108,7 +111,7 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش (استفاده از کوکی‌ها و فعال کردن موتور Node.js گیت‌هاب)
+    # تنظیمات اولیه برای خواندن لیست پخش
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
@@ -138,14 +141,13 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو (4K روان بدون کدک AV1)
+            # تنظیمات جدید برای جلوگیری از خطای fragment (اجبار به دانلود یکپارچه HTTP)
             download_opts = {
-                'format': 'bestvideo[vcodec!*=av01]+bestaudio/best',
+                'format': 'bestvideo[ext=mp4][protocol^=http]+bestaudio[ext=m4a][protocol^=http]/best[ext=mp4]/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mkv',
                 'cookiefile': 'cookies.txt',
                 'js_runtimes': {'node': {}},
-                'extractor_args': {'youtube': ['player_client=android,web,mweb']},
                 'sleep_interval': 5,
                 'max_sleep_interval': 10
             }
