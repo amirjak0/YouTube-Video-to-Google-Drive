@@ -8,18 +8,15 @@
 #    راه حل: بررسی مستقیم داخل پوشه Google Drive برای پیدا کردن فایل‌ها بر اساس شناسه (video_id).
 #
 # ۳. مسدودسازی آی‌پی‌های گیت‌هاب توسط گوگل: سرورهای گیت‌هاب به دلیل حجم درخواست بالا بلاک می‌شوند (خطای bot).
-#    راه حل: استفاده از فایل cookies.txt صادر شده از مرورگر واقعی کاربر.
+#    راه حل: استفاده از فایل کوکی صادر شده از مرورگر واقعی کاربر.
 #
-# ۴. خطای نام فایل کوکی: فایل کوکی در ویندوز به صورت cookies.txt.txt ذخیره شده بود که برنامه آن را پیدا نمی‌کرد.
-#    راه حل: اصلاح نام فایل به cookies.txt در مخزن گیت‌هاب.
+# ۴. خطای نام فایل کوکی: هماهنگ‌سازی نام فایل کوکی با فایلی که در مخزن آپلود شده است.
 #
-# ۵. تله کلاینت ios: شبیه‌سازی کلاینت ios اگرچه برخی چالش‌ها را دور می‌زند، اما کوکی‌ها را کاملاً نادیده می‌گیرد.
-#    راه حل: استفاده از کلاینت‌های android, web, mweb که با کوکی‌ها سازگار هستند.
+# ۵. خطای 403 Forbidden: یوتیوب کلاینت‌های web و android را روی سرورهای ابری مسدود می‌کند.
+#    راه حل: اضافه کردن کلاینت tv (تلویزیون هوشمند) به تنظیمات yt-dlp.
 #
 # ۶. چالش جاوااسکریپت (EJS): یوتیوب برای دانلود ویدیوها چالش n-parameter قرار داده که نیاز به موتور JS دارد.
-#    موتور Deno به طور پیش‌فرض توسط yt-dlp استفاده می‌شود اما در گیت‌هاب اکشنز به درستی در PATH قرار نمی‌گیرد.
-#    راه حل نهایی: نصب نسخه "yt-dlp[default]" و اجبار برنامه به استفاده از Node.js (که پیش‌فرض در گیت‌هاب نصب است)
-#    از طریق تنظیم کردن پارامتر 'js_runtimes': {'node': {}} در تنظیمات دانلود.
+#    راه حل نهایی: نصب نسخه "yt-dlp[default]" و اجبار برنامه به استفاده از Node.js.
 # ==============================================================================
 
 import os
@@ -35,6 +32,8 @@ from google.auth.transport.requests import Request
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 DOWNLOAD_FOLDER = 'downloads'
+# نام فایل کوکی دقیقاً مطابق با فایلی که در گیت‌هاب آپلود کرده‌اید تنظیم شد
+COOKIE_FILE = 'cookies.txt' 
 
 def setup_environment():
     # ساخت پوشه دانلود اگر وجود نداشته باشد
@@ -108,20 +107,28 @@ def process_playlist():
     if not service:
         return
 
-    # تنظیمات اولیه برای خواندن لیست پخش (استفاده از کوکی‌ها و فعال کردن موتور Node.js گیت‌هاب)
+    if not os.path.exists(COOKIE_FILE):
+        logging.warning(f"فایل کوکی با نام {COOKIE_FILE} یافت نشد! ممکن است با خطای 403 مواجه شوید.")
+
+    # تنظیمات اولیه برای خواندن لیست پخش
     ydl_opts = {
         'extract_flat': 'in_playlist',
         'quiet': True,
-        'cookiefile': 'cookies.txt',
+        'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
         'js_runtimes': {'node': {}},
-        'extractor_args': {'youtube': ['player_client=android,web,mweb']}
+        # اضافه شدن کلاینت tv برای دور زدن خطای 403
+        'extractor_args': {'youtube': ['player_client=tv,android,web']}
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         logging.info("در حال دریافت اطلاعات لیست پخش...")
-        playlist_dict = ydl.extract_info(playlist_url, download=False)
+        try:
+            playlist_dict = ydl.extract_info(playlist_url, download=False)
+        except Exception as e:
+            logging.error(f"خطا در دریافت اطلاعات لیست پخش: {e}")
+            return
         
-        if 'entries' not in playlist_dict:
+        if not playlist_dict or 'entries' not in playlist_dict:
             logging.error("ویدیویی یافت نشد.")
             return
 
@@ -138,27 +145,44 @@ def process_playlist():
 
             logging.info(f"در حال دانلود ویدیوی جدید: {video_id}")
             
-            # تنظیمات برای دانلود ویدیو (4K روان بدون کدک AV1)
+            # تنظیمات برای دانلود ویدیو
             download_opts = {
                 'format': 'bestvideo[vcodec!*=av01]+bestaudio/best',
                 'outtmpl': f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
                 'merge_output_format': 'mkv',
-                'cookiefile': 'cookies.txt',
+                'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None,
                 'js_runtimes': {'node': {}},
-                'extractor_args': {'youtube': ['player_client=android,web,mweb']},
+                # اضافه شدن کلاینت tv برای دور زدن خطای 403
+                'extractor_args': {'youtube': ['player_client=tv,android,web']},
                 'sleep_interval': 5,
-                'max_sleep_interval': 10
+                'max_sleep_interval': 15, # افزایش زمان استراحت برای جلوگیری از بلاک شدن
+                'ignoreerrors': True # رد شدن از ویدیوهای مشکل‌دار (مثل Premiere) تا کل برنامه متوقف نشود
             }
             
             try:
                 with yt_dlp.YoutubeDL(download_opts) as dl:
                     info = dl.extract_info(video.get('url') or video_id, download=True)
+                    
+                    # اگر ویدیو Premiere باشد یا در دسترس نباشد، info مقدار None برمی‌گرداند
+                    if info is None:
+                        logging.warning(f"امکان دانلود ویدیو {video_id} وجود ندارد (احتمالاً Premiere یا محدودیت سنی است).")
+                        continue
+
                     file_path = dl.prepare_filename(info)
                     
-                    # اگر آپلود موفق بود، فایل را پاک کن
-                    if upload_to_gdrive(service, folder_id, file_path):
-                        os.remove(file_path)
-                        logging.info("فایل از روی سرور پاک شد تا فضا اشغال نشود.")
+                    # بررسی مسیر فایل (گاهی اوقات به دلیل merge شدن، پسوند فایل تغییر می‌کند)
+                    if not os.path.exists(file_path):
+                        base_path = os.path.splitext(file_path)[0]
+                        file_path = base_path + '.mkv'
+
+                    if os.path.exists(file_path):
+                        # اگر آپلود موفق بود، فایل را پاک کن
+                        if upload_to_gdrive(service, folder_id, file_path):
+                            os.remove(file_path)
+                            logging.info("فایل از روی سرور پاک شد تا فضا اشغال نشود.")
+                    else:
+                        logging.error(f"فایل دانلود شده یافت نشد: {file_path}")
+
             except Exception as e:
                 logging.error(f"خطا در پردازش ویدیو {video_id}: {e}")
 
