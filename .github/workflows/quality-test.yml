@@ -56,7 +56,7 @@ jobs:
           test -n "$YOUTUBE_COOKIES"
           printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
 
-      - name: Test first playlist video
+      - name: Probe maximum quality of the exact playlist video
         env:
           YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL }}
         run: |
@@ -71,49 +71,133 @@ jobs:
             "$YOUTUBE_PLAYLIST_URL" | tail -n 1)
 
           test -n "$TEST_VIDEO_URL"
-          echo "TEST VIDEO: $TEST_VIDEO_URL"
+          echo "TARGET VIDEO: $TEST_VIDEO_URL"
+          mkdir -p probe-results
 
-          mkdir -p quality-test
+          CLIENTS="default web web_safari web_embedded web_music web_creator mweb ios visionos android android_vr tv tv_downgraded tv_simply"
 
-          yt-dlp \
-            --verbose \
-            --js-runtimes node \
-            --cookies cookies.txt \
-            --merge-output-format mkv \
-            --download-sections "*0-30" \
-            --format "bestvideo*+bestaudio/best" \
-            --output "quality-test/%(title)s [quality-test].%(ext)s" \
-            "$TEST_VIDEO_URL" 2>&1 | tee quality-test.log
+          for CLIENT in $CLIENTS; do
+            echo "============================================================"
+            echo "PROBING CLIENT: $CLIENT"
+            echo "============================================================"
+            yt-dlp \
+              --dump-single-json \
+              --skip-download \
+              --no-warnings \
+              --js-runtimes node \
+              --cookies cookies.txt \
+              --extractor-args "youtube:player_client=$CLIENT" \
+              "$TEST_VIDEO_URL" > "probe-results/${CLIENT}.json" 2> "probe-results/${CLIENT}.err" || true
+          done
 
-          TEST_FILE=$(find quality-test -maxdepth 1 -type f | head -n 1)
-          test -n "$TEST_FILE"
+          echo "===== PER-CLIENT QUALITY REPORT ====="
+          python - <<'PY'
+          import json
+          import glob
+          import os
 
-          echo "===== FINAL VIDEO STREAM ====="
-          ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate \
-            -of default=noprint_wrappers=1 "$TEST_FILE"
+          def score(f):
+              return (
+                  int(f.get('height') or 0),
+                  int(f.get('width') or 0),
+                  float(f.get('fps') or 0),
+                  float(f.get('tbr') or 0),
+              )
 
-          HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$TEST_FILE")
-          WIDTH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$TEST_FILE")
+          def video_formats(formats):
+              return [f for f in (formats or []) if f.get('vcodec') not in (None, 'none') and (f.get('height') or 0) > 0]
 
-          echo "FINAL RESOLUTION: ${WIDTH}x${HEIGHT}"
+          best_meta = None
+          best_direct = None
 
-          if [ "${HEIGHT:-0}" -ge 2160 ]; then
-            echo "RESULT: 4K/UHD OK"
-          elif [ "${HEIGHT:-0}" -ge 1440 ]; then
-            echo "RESULT: 1440p OK"
-          elif [ "${HEIGHT:-0}" -ge 1080 ]; then
-            echo "RESULT: 1080p OK"
-          elif [ "${HEIGHT:-0}" -ge 720 ]; then
-            echo "RESULT: 720p OK"
+          for path in sorted(glob.glob('probe-results/*.json')):
+              client = os.path.basename(path)[:-5]
+              try:
+                  with open(path, encoding='utf-8') as fh:
+                      info = json.load(fh)
+              except Exception:
+                  print(f'CLIENT={client} STATUS=NO_JSON')
+                  continue
+
+              formats = video_formats(info.get('formats'))
+              metadata = max(formats, key=score) if formats else None
+              direct = [f for f in formats if f.get('url')]
+              downloadable = max(direct, key=score) if direct else None
+
+              def desc(f):
+                  if not f:
+                      return 'NONE'
+                  return f"{f.get('format_id')} {f.get('resolution')} fps={f.get('fps')} tbr={f.get('tbr')} url={'YES' if f.get('url') else 'NO'}"
+
+              print(f'CLIENT={client} METADATA_MAX={desc(metadata)}')
+              print(f'CLIENT={client} DOWNLOADABLE_MAX={desc(downloadable)}')
+
+              if metadata and (best_meta is None or score(metadata) > score(best_meta['format'])):
+                  best_meta = {'client': client, 'format': metadata}
+              if downloadable and (best_direct is None or score(downloadable) > score(best_direct['format'])):
+                  best_direct = {'client': client, 'format': downloadable}
+
+          print('===== GLOBAL MAXIMUM =====')
+          print(f"GLOBAL_METADATA_MAX={desc(best_meta['format']) if best_meta else 'NONE'} CLIENT={best_meta['client'] if best_meta else 'NONE'}")
+          print(f"GLOBAL_DOWNLOADABLE_MAX={desc(best_direct['format']) if best_direct else 'NONE'} CLIENT={best_direct['client'] if best_direct else 'NONE'}")
+
+          with open('probe-selection.env', 'w', encoding='utf-8') as fh:
+              fh.write(f"BEST_CLIENT={best_direct['client'] if best_direct else ''}\n")
+              fh.write(f"BEST_FORMAT_ID={best_direct['format'].get('format_id') if best_direct else ''}\n")
+              fh.write(f"BEST_HEIGHT={best_direct['format'].get('height') if best_direct else '0'}\n")
+              fh.write(f"BEST_WIDTH={best_direct['format'].get('width') if best_direct else '0'}\n")
+              fh.write(f"META_HEIGHT={best_meta['format'].get('height') if best_meta else '0'}\n")
+
+          if best_meta and best_direct and score(best_meta['format']) > score(best_direct['format']):
+              print('DIAGNOSIS=SABR_OR_MISSING_DIRECT_URL: metadata advertises higher quality than direct downloadable URLs')
+          elif best_direct:
+              print('DIAGNOSIS=DIRECT_DOWNLOAD_FORMAT_FOUND')
+          else:
+              print('DIAGNOSIS=NO_DIRECT_DOWNLOADABLE_VIDEO_FORMAT_FOUND')
+          PY
+
+          cat probe-selection.env
+
+          if grep -q '^BEST_FORMAT_ID=' probe-selection.env && [ -n "$(cut -d= -f2 probe-selection.env)" ]; then
+            BEST_CLIENT=$(cut -d= -f2 probe-selection.env | head -n1)
+            BEST_FORMAT_ID=$(cut -d= -f2 probe-selection.env | sed -n '2p')
+            echo "BEST CLIENT: $BEST_CLIENT"
+            echo "BEST DIRECT FORMAT: $BEST_FORMAT_ID"
+
+            rm -rf quality-test
+            mkdir -p quality-test
+
+            yt-dlp \
+              --verbose \
+              --js-runtimes node \
+              --cookies cookies.txt \
+              --extractor-args "youtube:player_client=$BEST_CLIENT" \
+              --merge-output-format mkv \
+              --download-sections "*0-30" \
+              --format "${BEST_FORMAT_ID}+bestaudio/best" \
+              --output "quality-test/%(title)s [quality-test].%(ext)s" \
+              "$TEST_VIDEO_URL" 2>&1 | tee quality-test.log
+
+            TEST_FILE=$(find quality-test -maxdepth 1 -type f | head -n 1)
+            test -n "$TEST_FILE"
+
+            echo "===== FINAL REAL DOWNLOAD ====="
+            ffprobe -v error -select_streams v:0 \
+              -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate \
+              -of default=noprint_wrappers=1 "$TEST_FILE"
           else
-            echo "RESULT: BELOW 720p - YouTube is still limiting the exposed format set"
+            echo "NO DIRECT DOWNLOAD FORMAT WAS FOUND. No fake 360p fallback will be treated as the maximum quality."
           fi
 
       - name: Diagnostics
         if: always()
         run: |
-          echo "===== yt-dlp provider evidence ====="
-          grep -Ei "PO Token Providers|bgutil:http|JS runtimes|SABR|challenge solving|signature solving" quality-test.log 2>/dev/null || true
+          echo "===== Probe diagnostics ====="
+          for f in probe-results/*.err; do
+            echo "--- $f ---"
+            tail -n 30 "$f" 2>/dev/null || true
+          done
+          echo "===== Quality log ====="
+          tail -n 200 quality-test.log 2>/dev/null || true
           echo "===== BgUtils log ====="
           cat bgutil.log 2>/dev/null || true
