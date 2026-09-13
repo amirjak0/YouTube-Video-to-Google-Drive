@@ -191,22 +191,23 @@ jobs:
           curl -fsS http://127.0.0.1:4416/ping
           echo
 
-          echo "===== yt-dlp provider verification ====="
+          echo "===== yt-dlp automatic client verification ====="
 
+          # Do not force mweb here. The downloader chooses the best client
+          # automatically based on the formats actually exposed to this run.
           yt-dlp \
             --verbose \
             --simulate \
-            --extractor-args "youtube:player_client=mweb" \
             --cookies cookies.txt \
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
             2>&1 | tee yt-dlp-provider-test.log
 
           echo "===== Provider evidence ====="
 
-          if grep -qi "bgutil" yt-dlp-provider-test.log; then
-            echo "BgUtils provider detected."
+          if grep -qi "bgutil:http" yt-dlp-provider-test.log; then
+            echo "BgUtils HTTP provider detected and available."
           else
-            echo "WARNING: BgUtils provider was not found in yt-dlp output."
+            echo "WARNING: BgUtils HTTP provider was not reported in yt-dlp output."
           fi
 
           if grep -qi "PO Token Providers" yt-dlp-provider-test.log; then
