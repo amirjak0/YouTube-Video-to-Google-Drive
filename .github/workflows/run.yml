@@ -4,6 +4,16 @@ on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      update_existing:
+        description: 'Auto-upgrade existing videos if higher resolution is found (e.g. 360p -> 1080p+)'
+        required: false
+        type: boolean
+        default: true
+      force_quality:
+        description: 'Target maximum quality limit (2160, 1440, 1080, 720)'
+        required: false
+        default: '2160'
 
 permissions:
   contents: write
@@ -24,11 +34,6 @@ jobs:
           sudo apt-get install -y ffmpeg curl
           ffmpeg -version | head -n 1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -39,100 +44,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
 
-      - name: Show versions
-        run: |
-          echo "===== Python ====="
-          python --version
-          echo "===== Node ====="
-          node --version
-          echo "===== npm ====="
-          npm --version
-          echo "===== yt-dlp ====="
-          yt-dlp --version
-          echo "===== yt-dlp-ejs ====="
-          pip show yt-dlp-ejs | grep -E '^(Name|Version):' || true
-          echo "===== PO Token provider ====="
-          pip show bgutil-ytdlp-pot-provider | grep -E '^(Name|Version):' || true
-
-      - name: Install BgUtils PO Token Provider
-        run: |
-          rm -rf bgutil-ytdlp-pot-provider
-          git clone \
-            --depth 1 \
-            --single-branch \
-            --branch 2.0.0 \
-            https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
-            bgutil-ytdlp-pot-provider
-          cd bgutil-ytdlp-pot-provider/server
-          npm ci
-          npx tsc
-
-      - name: Start PO Token server
-        run: |
-          cd bgutil-ytdlp-pot-provider/server
-          nohup node build/main.js --port 4416 > ../../bgutil-provider.log 2>&1 &
-          PROVIDER_PID=$!
-          cd ../..
-
-          READY=0
-          for i in {1..15}; do
-            if curl -fsS http://127.0.0.1:4416/ping > /tmp/provider_ping.txt 2>&1; then
-              READY=1
-              break
-            fi
-            sleep 2
-            if ! kill -0 "$PROVIDER_PID" 2>/dev/null; then
-              cat bgutil-provider.log || true
-              exit 1
-            fi
-          done
-
-          if [ "$READY" -ne 1 ]; then
-            cat bgutil-provider.log || true
-            exit 1
-          fi
-
-          cat /tmp/provider_ping.txt
-          echo
-
-      - name: Create Cookie File
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: |
-          test -n "$YOUTUBE_COOKIES"
-          printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
-          echo "Cookie lines: $(wc -l < cookies.txt)"
-
-      - name: Verify YouTube access and PO Token
-        run: |
-          yt-dlp \
-            --verbose \
-            --simulate \
-            --cookies cookies.txt \
-            --js-runtimes node \
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
-            2>&1 | tee yt-dlp-provider-test.log
-
-          if grep -qi "bgutil:http\|PO Token Providers" yt-dlp-provider-test.log; then
-            echo "PO Token provider evidence detected."
-          else
-            echo "WARNING: PO Token provider evidence was not found in yt-dlp output."
-          fi
-
       - name: Run downloader
         env:
           YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          UPDATE_EXISTING: ${{ github.event.inputs.update_existing || 'true' }}
+          FORCE_QUALITY_LIMIT: ${{ github.event.inputs.force_quality || '2160' }}
         run: |
           python main.py
-
-      - name: Show diagnostics
-        if: always()
-        run: |
-          echo "===== BgUtils Provider Log ====="
-          cat bgutil-provider.log 2>/dev/null || true
-          echo "===== Workspace ====="
-          find downloads -maxdepth 2 -type f -printf '%p\t%k KB\n' 2>/dev/null | sort || true
