@@ -1,6 +1,6 @@
 # ==============================================================================
 # YouTube -> Google Drive
-# دانلود بالاترین کیفیت موجود با yt-dlp + PO Token Provider
+# دانلود بالاترین کیفیت موجود با انتخاب خودکار بهترین YouTube client
 # ==============================================================================
 
 import os
@@ -26,6 +26,17 @@ logging.basicConfig(
 
 DOWNLOAD_FOLDER = 'downloads'
 COOKIE_FILE = 'cookies.txt'
+
+# Try the normal/default client set first, then explicit fallbacks.
+# `default` is intentionally first because yt-dlp adapts its YouTube clients
+# to the current authentication/runtime situation.
+PLAYER_CLIENT_CANDIDATES = [
+    'default',
+    'web_creator',
+    'web_safari',
+    'web_embedded',
+    'mweb',
+]
 
 
 # ==============================================================================
@@ -96,9 +107,7 @@ def video_exists_in_gdrive(service, folder_id, video_id):
         return len(results.get("files", [])) > 0
 
     except Exception as e:
-        logging.error(
-            f"Google Drive search error: {e}"
-        )
+        logging.error(f"Google Drive search error: {e}")
         return False
 
 
@@ -110,9 +119,7 @@ def upload_to_gdrive(service, folder_id, file_path):
     try:
         filename = os.path.basename(file_path)
 
-        logging.info(
-            f"Uploading to Google Drive: {filename}"
-        )
+        logging.info(f"Uploading to Google Drive: {filename}")
 
         file_metadata = {
             "name": filename,
@@ -136,17 +143,136 @@ def upload_to_gdrive(service, folder_id, file_path):
             fields="id"
         ).execute()
 
-        logging.info(
-            f"Upload successful. File ID: {result.get('id')}"
-        )
-
+        logging.info(f"Upload successful. File ID: {result.get('id')}")
         return True
 
     except Exception as e:
-        logging.error(
-            f"Upload error: {e}"
-        )
+        logging.error(f"Upload error: {e}")
         return False
+
+
+# ==============================================================================
+# YouTube options
+# ==============================================================================
+
+def build_youtube_opts(cookie_path, player_client):
+    return {
+        "cookiefile": cookie_path,
+        "js_runtimes": {
+            "node": {}
+        },
+        "extractor_args": {
+            "youtube": [
+                f"player_client={player_client}"
+            ]
+        },
+    }
+
+
+def get_video_quality_score(fmt):
+    """Return a sortable quality score for a video format."""
+    return (
+        int(fmt.get("height") or 0),
+        int(fmt.get("width") or 0),
+        float(fmt.get("fps") or 0),
+        float(fmt.get("tbr") or 0),
+    )
+
+
+def get_best_available_format_info(info):
+    """
+    Find the best video-capable format exposed by yt-dlp.
+    Separate video-only formats are considered because the final download can
+    merge the best video and best audio streams.
+    """
+    formats = info.get("formats") or []
+    video_formats = [
+        f for f in formats
+        if f.get("vcodec") not in (None, "none")
+        and (f.get("height") or 0) > 0
+    ]
+
+    if not video_formats:
+        return None
+
+    return max(video_formats, key=get_video_quality_score)
+
+
+def choose_best_player_client(video_url, cookie_path):
+    """
+    Probe each candidate client automatically and select the client exposing
+    the highest-quality usable video formats. This avoids hard-coding mweb.
+    """
+    best_result = None
+    best_score = (-1, -1, -1, -1)
+
+    for player_client in PLAYER_CLIENT_CANDIDATES:
+        logging.info(f"Probing YouTube client: {player_client}")
+
+        probe_opts = build_youtube_opts(cookie_path, player_client)
+        probe_opts.update({
+            "quiet": True,
+            "no_warnings": False,
+            "ignoreerrors": True,
+        })
+
+        try:
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+
+            if not info:
+                logging.warning(f"Client {player_client}: no video info returned.")
+                continue
+
+            best_format = get_best_available_format_info(info)
+
+            if not best_format:
+                logging.warning(
+                    f"Client {player_client}: no usable video format found."
+                )
+                continue
+
+            score = get_video_quality_score(best_format)
+            logging.info(
+                "Client %s: best video = format %s, resolution=%s, fps=%s, tbr=%s",
+                player_client,
+                best_format.get("format_id"),
+                best_format.get("resolution"),
+                best_format.get("fps"),
+                best_format.get("tbr"),
+            )
+
+            if score > best_score:
+                best_score = score
+                best_result = {
+                    "player_client": player_client,
+                    "info": info,
+                    "best_format": best_format,
+                    "score": score,
+                }
+
+        except Exception as e:
+            logging.warning(
+                f"Client {player_client} probe failed: {e}"
+            )
+
+    if best_result:
+        bf = best_result["best_format"]
+        logging.info(
+            "Selected YouTube client automatically: %s",
+            best_result["player_client"],
+        )
+        logging.info(
+            "Best detected video quality: %s (format %s)",
+            bf.get("resolution"),
+            bf.get("format_id"),
+        )
+        return best_result["player_client"]
+
+    logging.warning(
+        "No candidate client produced a usable video format. Falling back to default client set."
+    )
+    return "default"
 
 
 # ==============================================================================
@@ -154,226 +280,94 @@ def upload_to_gdrive(service, folder_id, file_path):
 # ==============================================================================
 
 def process_playlist():
-
-    playlist_url = os.environ.get(
-        "YOUTUBE_PLAYLIST_URL"
-    )
-
-    folder_id = os.environ.get(
-        "GDRIVE_FOLDER_ID"
-    )
+    playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL")
+    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
 
     if not playlist_url:
-        logging.error(
-            "YOUTUBE_PLAYLIST_URL is missing."
-        )
+        logging.error("YOUTUBE_PLAYLIST_URL is missing.")
         return
 
     if not folder_id:
-        logging.error(
-            "GDRIVE_FOLDER_ID is missing."
-        )
+        logging.error("GDRIVE_FOLDER_ID is missing.")
         return
 
-    # --------------------------------------------------------------------------
-    # Google Drive
-    # --------------------------------------------------------------------------
-
     service = get_gdrive_service()
-
     if not service:
         return
 
-    # --------------------------------------------------------------------------
-    # Cookies
-    # --------------------------------------------------------------------------
-
-    cookie_path = (
-        COOKIE_FILE
-        if os.path.exists(COOKIE_FILE)
-        else None
-    )
+    cookie_path = COOKIE_FILE if os.path.exists(COOKIE_FILE) else None
 
     if cookie_path:
         logging.info("YouTube cookies detected.")
     else:
-        logging.warning(
-            "cookies.txt was not found."
-        )
+        logging.warning("cookies.txt was not found.")
 
-    # ==============================================================================
-    # Playlist extractor options
-    # ==============================================================================
-
+    # For the playlist itself, do NOT force mweb. Let yt-dlp use its current
+    # playlist extraction behavior; the per-video client is chosen below.
     playlist_opts = {
-
         "extract_flat": "in_playlist",
-
         "quiet": False,
-
         "cookiefile": cookie_path,
-
-        # Node.js for JS challenges
         "js_runtimes": {
             "node": {}
         },
-
-        # IMPORTANT:
-        # mweb is used because the current yt-dlp PO Token guide
-        # recommends mweb + PO Token Provider for GVS requests.
-        "extractor_args": {
-            "youtube": [
-                "player_client=mweb"
-            ]
-        }
     }
 
-    # ==============================================================================
-    # Read playlist
-    # ==============================================================================
-
     try:
-
         with yt_dlp.YoutubeDL(playlist_opts) as ydl:
-
-            logging.info(
-                "Reading playlist..."
-            )
-
+            logging.info("Reading playlist...")
             playlist_info = ydl.extract_info(
                 playlist_url,
                 download=False
             )
-
     except Exception as e:
-
-        logging.error(
-            f"Playlist extraction failed: {e}"
-        )
-
+        logging.error(f"Playlist extraction failed: {e}")
         return
 
     if not playlist_info:
-        logging.error(
-            "Playlist information could not be retrieved."
-        )
+        logging.error("Playlist information could not be retrieved.")
         return
 
     if "entries" not in playlist_info:
-        logging.error(
-            "No videos were found in playlist."
-        )
+        logging.error("No videos were found in playlist.")
         return
 
-    # ==============================================================================
-    # Process videos
-    # ==============================================================================
-
     for video in playlist_info["entries"]:
-
         if not video:
             continue
 
         video_id = video.get("id")
-
         if not video_id:
             continue
 
-        # --------------------------------------------------------------------------
-        # Already exists?
-        # --------------------------------------------------------------------------
-
-        if video_exists_in_gdrive(
-            service,
-            folder_id,
-            video_id
-        ):
-
-            logging.info(
-                f"Already exists in Google Drive: {video_id}"
-            )
-
+        if video_exists_in_gdrive(service, folder_id, video_id):
+            logging.info(f"Already exists in Google Drive: {video_id}")
             continue
 
-        logging.info(
-            "=" * 80
-        )
+        logging.info("=" * 80)
+        logging.info(f"Starting download: {video_id}")
+        logging.info("Automatically selecting the highest available quality...")
 
-        logging.info(
-            f"Starting download: {video_id}"
-        )
-
-        logging.info(
-            "Selecting the highest available video + audio quality..."
-        )
-
-        # ==============================================================================
-        # Download options
-        # ==============================================================================
+        video_url = video.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+        selected_client = choose_best_player_client(video_url, cookie_path)
 
         download_opts = {
-
-            # ----------------------------------------------------------------------
-            # HIGHEST AVAILABLE QUALITY
-            #
-            # Prefer separate best video + best audio.
-            # If separate streams are unavailable, fallback to best single file.
-            # ----------------------------------------------------------------------
-
-            "format": (
-                "bestvideo*+bestaudio/"
-                "best"
-            ),
-
-            # ----------------------------------------------------------------------
-            # Output file
-            # ----------------------------------------------------------------------
-
+            "format": "bestvideo*+bestaudio/best",
             "outtmpl": (
                 f"{DOWNLOAD_FOLDER}/"
                 "%(title)s "
                 f"[{video_id}].%(ext)s"
             ),
-
-            # ----------------------------------------------------------------------
-            # Final container
-            # ----------------------------------------------------------------------
-
             "merge_output_format": "mkv",
-
-            # ----------------------------------------------------------------------
-            # Cookies
-            # ----------------------------------------------------------------------
-
             "cookiefile": cookie_path,
-
-            # ----------------------------------------------------------------------
-            # JavaScript
-            # ----------------------------------------------------------------------
-
             "js_runtimes": {
                 "node": {}
             },
-
-            # ----------------------------------------------------------------------
-            # IMPORTANT:
-            # Use mweb so the installed PO Token Provider can generate the
-            # required token automatically.
-            # ----------------------------------------------------------------------
-
             "extractor_args": {
                 "youtube": [
-                    "player_client=mweb"
+                    f"player_client={selected_client}"
                 ]
             },
-
-            # ----------------------------------------------------------------------
-            # Sorting:
-            # highest resolution first
-            # highest fps first
-            # highest bitrate first
-            # ----------------------------------------------------------------------
-
             "format_sort": [
                 "res",
                 "fps",
@@ -381,98 +375,48 @@ def process_playlist():
                 "vcodec:av01",
                 "acodec"
             ],
-
-            # ----------------------------------------------------------------------
-            # Keep going if one video fails
-            # ----------------------------------------------------------------------
-
             "ignoreerrors": True,
-
-            # ----------------------------------------------------------------------
-            # Small delay between videos
-            # ----------------------------------------------------------------------
-
             "sleep_interval": 5,
-
             "max_sleep_interval": 15,
-
-            # ----------------------------------------------------------------------
-            # Log format selection clearly
-            # ----------------------------------------------------------------------
-
-            "verbose": True
+            "verbose": True,
         }
 
-        # ==============================================================================
-        # Download
-        # ==============================================================================
-
         try:
-
             with yt_dlp.YoutubeDL(download_opts) as dl:
-
                 info = dl.extract_info(
-                    video.get("url") or video_id,
+                    video_url,
                     download=True
                 )
 
                 if info is None:
-
                     logging.warning(
                         f"Download failed or video unavailable: {video_id}"
                     )
-
                     continue
 
-                # ------------------------------------------------------------------
-                # Print selected format information
-                # ------------------------------------------------------------------
-
-                requested_formats = info.get(
-                    "requested_formats"
-                )
+                requested_formats = info.get("requested_formats")
 
                 if requested_formats:
-
-                    logging.info(
-                        "Selected separate video/audio streams:"
-                    )
-
+                    logging.info("Selected separate video/audio streams:")
                     for fmt in requested_formats:
-
                         logging.info(
-                            "  "
-                            f"format_id={fmt.get('format_id')} "
-                            f"resolution={fmt.get('resolution')} "
-                            f"fps={fmt.get('fps')} "
-                            f"vcodec={fmt.get('vcodec')} "
-                            f"acodec={fmt.get('acodec')} "
-                            f"tbr={fmt.get('tbr')}"
+                            "  format_id=%s resolution=%s fps=%s vcodec=%s acodec=%s tbr=%s",
+                            fmt.get("format_id"),
+                            fmt.get("resolution"),
+                            fmt.get("fps"),
+                            fmt.get("vcodec"),
+                            fmt.get("acodec"),
+                            fmt.get("tbr"),
                         )
-
                 else:
-
                     logging.info(
-                        "Selected single format: "
-                        f"{info.get('format_id')}"
+                        f"Selected single format: {info.get('format_id')}"
                     )
-
-                # ------------------------------------------------------------------
-                # Find downloaded file
-                # ------------------------------------------------------------------
 
                 file_path = dl.prepare_filename(info)
 
-                # ------------------------------------------------------------------
-                # After merge the extension can become MKV
-                # ------------------------------------------------------------------
-
                 if not os.path.exists(file_path):
-
-                    base_path = os.path.splitext(
-                        file_path
-                    )[0]
-
+                    base_path = os.path.splitext(file_path)[0]
                     possible_paths = [
                         base_path + ".mkv",
                         base_path + ".mp4",
@@ -480,71 +424,39 @@ def process_playlist():
                     ]
 
                     found = False
-
                     for candidate in possible_paths:
-
                         if os.path.exists(candidate):
-
                             file_path = candidate
                             found = True
                             break
 
                     if not found:
-
                         logging.error(
-                            f"Downloaded file was not found: "
-                            f"{file_path}"
+                            f"Downloaded file was not found: {file_path}"
                         )
-
                         continue
 
-                # ------------------------------------------------------------------
-                # Upload
-                # ------------------------------------------------------------------
+                logging.info(f"Downloaded file: {file_path}")
 
-                if os.path.exists(file_path):
+                upload_ok = upload_to_gdrive(
+                    service,
+                    folder_id,
+                    file_path
+                )
 
-                    logging.info(
-                        f"Downloaded file: {file_path}"
-                    )
-
-                    upload_ok = upload_to_gdrive(
-                        service,
-                        folder_id,
-                        file_path
-                    )
-
-                    # ------------------------------------------------------------------
-                    # Delete local file only after successful upload
-                    # ------------------------------------------------------------------
-
-                    if upload_ok:
-
-                        try:
-
-                            os.remove(file_path)
-
-                            logging.info(
-                                "Local file deleted after successful upload."
-                            )
-
-                        except Exception as e:
-
-                            logging.warning(
-                                f"Could not delete local file: {e}"
-                            )
-
-                else:
-
-                    logging.error(
-                        "Final downloaded file does not exist."
-                    )
+                if upload_ok:
+                    try:
+                        os.remove(file_path)
+                        logging.info(
+                            "Local file deleted after successful upload."
+                        )
+                    except Exception as e:
+                        logging.warning(
+                            f"Could not delete local file: {e}"
+                        )
 
         except Exception as e:
-
-            logging.error(
-                f"Error processing {video_id}: {e}"
-            )
+            logging.error(f"Error processing {video_id}: {e}")
 
 
 # ==============================================================================
@@ -552,7 +464,5 @@ def process_playlist():
 # ==============================================================================
 
 if __name__ == "__main__":
-
     setup_environment()
-
     process_playlist()
