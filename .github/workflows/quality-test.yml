@@ -30,24 +30,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install yt-dlp, EJS and PO Token provider
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --upgrade "yt-dlp[default]" yt-dlp-ejs bgutil-ytdlp-pot-provider
+          pip install --upgrade -r requirements.txt
 
       - name: Install and start BgUtils
         run: |
-          git clone --depth 1 --single-branch --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git bgutil
+          git clone --depth 1 --single-branch --branch 2.0.0 \
+            https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git bgutil
           cd bgutil/server
           npm ci
           npx tsc
           nohup node build/main.js --port 4416 > ../../bgutil.log 2>&1 &
           cd ../..
+
           for i in {1..15}; do
-            curl -fsS http://127.0.0.1:4416/ping && break
+            if curl -fsS http://127.0.0.1:4416/ping; then
+              echo
+              break
+            fi
             sleep 2
           done
           curl -fsS http://127.0.0.1:4416/ping
+          echo
 
       - name: Create cookies
         env:
@@ -56,7 +62,7 @@ jobs:
           test -n "$YOUTUBE_COOKIES"
           printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
 
-      - name: Probe maximum quality of the exact playlist video
+      - name: Probe maximum quality of exact playlist video
         env:
           YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL }}
         run: |
@@ -72,6 +78,8 @@ jobs:
 
           test -n "$TEST_VIDEO_URL"
           echo "TARGET VIDEO: $TEST_VIDEO_URL"
+
+          rm -rf probe-results quality-test
           mkdir -p probe-results
 
           CLIENTS="default web web_safari web_embedded web_music web_creator mweb ios visionos android android_vr tv tv_downgraded tv_simply"
@@ -87,70 +95,101 @@ jobs:
               --js-runtimes node \
               --cookies cookies.txt \
               --extractor-args "youtube:player_client=$CLIENT" \
-              "$TEST_VIDEO_URL" > "probe-results/${CLIENT}.json" 2> "probe-results/${CLIENT}.err" || true
+              "$TEST_VIDEO_URL" \
+              > "probe-results/${CLIENT}.json" \
+              2> "probe-results/${CLIENT}.err" || true
           done
 
-          echo "===== PER-CLIENT QUALITY REPORT ====="
           python - <<'PY'
-          import json
           import glob
+          import json
           import os
 
-          def score(f):
+          def is_format(value):
+              return isinstance(value, dict)
+
+          def score(fmt):
               return (
-                  int(f.get('height') or 0),
-                  int(f.get('width') or 0),
-                  float(f.get('fps') or 0),
-                  float(f.get('tbr') or 0),
+                  int(fmt.get('height') or 0),
+                  int(fmt.get('width') or 0),
+                  float(fmt.get('fps') or 0),
+                  float(fmt.get('tbr') or 0),
               )
 
-          def video_formats(formats):
-              return [f for f in (formats or []) if f.get('vcodec') not in (None, 'none') and (f.get('height') or 0) > 0]
+          def label(fmt):
+              if not fmt:
+                  return 'NONE'
+              width = int(fmt.get('width') or 0)
+              height = int(fmt.get('height') or 0)
+              return (
+                  f"format={fmt.get('format_id')} "
+                  f"resolution={fmt.get('resolution') or f'{width}x{height}'} "
+                  f"fps={fmt.get('fps')} tbr={fmt.get('tbr')} "
+                  f"url={'YES' if fmt.get('url') else 'NO'}"
+              )
 
-          best_meta = None
-          best_direct = None
+          global_metadata = None
+          global_direct = None
+
+          print('===== PER-CLIENT QUALITY REPORT =====')
 
           for path in sorted(glob.glob('probe-results/*.json')):
               client = os.path.basename(path)[:-5]
               try:
                   with open(path, encoding='utf-8') as fh:
                       info = json.load(fh)
-              except Exception:
-                  print(f'CLIENT={client} STATUS=NO_JSON')
+              except Exception as exc:
+                  print(f'CLIENT={client} STATUS=INVALID_JSON ERROR={exc}')
                   continue
 
-              formats = video_formats(info.get('formats'))
+              if not isinstance(info, dict):
+                  print(f'CLIENT={client} STATUS=INVALID_INFO')
+                  continue
+
+              formats = [
+                  item for item in (info.get('formats') or [])
+                  if is_format(item)
+                  and item.get('vcodec') not in (None, 'none')
+                  and int(item.get('height') or 0) > 0
+              ]
+
               metadata = max(formats, key=score) if formats else None
-              direct = [f for f in formats if f.get('url')]
+              direct = [item for item in formats if item.get('url')]
               downloadable = max(direct, key=score) if direct else None
 
-              def desc(f):
-                  if not f:
-                      return 'NONE'
-                  return f"{f.get('format_id')} {f.get('resolution')} fps={f.get('fps')} tbr={f.get('tbr')} url={'YES' if f.get('url') else 'NO'}"
+              print(f'CLIENT={client} METADATA_MAX={label(metadata)}')
+              print(f'CLIENT={client} DOWNLOADABLE_MAX={label(downloadable)}')
 
-              print(f'CLIENT={client} METADATA_MAX={desc(metadata)}')
-              print(f'CLIENT={client} DOWNLOADABLE_MAX={desc(downloadable)}')
+              if metadata and (global_metadata is None or score(metadata) > score(global_metadata[1])):
+                  global_metadata = (client, metadata)
 
-              if metadata and (best_meta is None or score(metadata) > score(best_meta['format'])):
-                  best_meta = {'client': client, 'format': metadata}
-              if downloadable and (best_direct is None or score(downloadable) > score(best_direct['format'])):
-                  best_direct = {'client': client, 'format': downloadable}
+              if downloadable and (global_direct is None or score(downloadable) > score(global_direct[1])):
+                  global_direct = (client, downloadable)
 
           print('===== GLOBAL MAXIMUM =====')
-          print(f"GLOBAL_METADATA_MAX={desc(best_meta['format']) if best_meta else 'NONE'} CLIENT={best_meta['client'] if best_meta else 'NONE'}")
-          print(f"GLOBAL_DOWNLOADABLE_MAX={desc(best_direct['format']) if best_direct else 'NONE'} CLIENT={best_direct['client'] if best_direct else 'NONE'}")
+          print(
+              'GLOBAL_METADATA_MAX=' +
+              (label(global_metadata[1]) if global_metadata else 'NONE') +
+              ' CLIENT=' +
+              (global_metadata[0] if global_metadata else 'NONE')
+          )
+          print(
+              'GLOBAL_DOWNLOADABLE_MAX=' +
+              (label(global_direct[1]) if global_direct else 'NONE') +
+              ' CLIENT=' +
+              (global_direct[0] if global_direct else 'NONE')
+          )
 
           with open('probe-selection.env', 'w', encoding='utf-8') as fh:
-              fh.write(f"BEST_CLIENT={best_direct['client'] if best_direct else ''}\n")
-              fh.write(f"BEST_FORMAT_ID={best_direct['format'].get('format_id') if best_direct else ''}\n")
-              fh.write(f"BEST_HEIGHT={best_direct['format'].get('height') if best_direct else '0'}\n")
-              fh.write(f"BEST_WIDTH={best_direct['format'].get('width') if best_direct else '0'}\n")
-              fh.write(f"META_HEIGHT={best_meta['format'].get('height') if best_meta else '0'}\n")
+              fh.write(f"BEST_CLIENT={global_direct[0] if global_direct else ''}\n")
+              fh.write(f"BEST_FORMAT_ID={global_direct[1].get('format_id') if global_direct else ''}\n")
+              fh.write(f"BEST_HEIGHT={global_direct[1].get('height') if global_direct else '0'}\n")
+              fh.write(f"BEST_WIDTH={global_direct[1].get('width') if global_direct else '0'}\n")
+              fh.write(f"META_HEIGHT={global_metadata[1].get('height') if global_metadata else '0'}\n")
 
-          if best_meta and best_direct and score(best_meta['format']) > score(best_direct['format']):
-              print('DIAGNOSIS=SABR_OR_MISSING_DIRECT_URL: metadata advertises higher quality than direct downloadable URLs')
-          elif best_direct:
+          if global_metadata and global_direct and score(global_metadata[1]) > score(global_direct[1]):
+              print('DIAGNOSIS=SABR_OR_MISSING_DIRECT_URL')
+          elif global_direct:
               print('DIAGNOSIS=DIRECT_DOWNLOAD_FORMAT_FOUND')
           else:
               print('DIAGNOSIS=NO_DIRECT_DOWNLOADABLE_VIDEO_FORMAT_FOUND')
@@ -158,13 +197,11 @@ jobs:
 
           cat probe-selection.env
 
-          if grep -q '^BEST_FORMAT_ID=' probe-selection.env && [ -n "$(cut -d= -f2 probe-selection.env)" ]; then
-            BEST_CLIENT=$(cut -d= -f2 probe-selection.env | head -n1)
-            BEST_FORMAT_ID=$(cut -d= -f2 probe-selection.env | sed -n '2p')
-            echo "BEST CLIENT: $BEST_CLIENT"
-            echo "BEST DIRECT FORMAT: $BEST_FORMAT_ID"
+          BEST_CLIENT=$(grep '^BEST_CLIENT=' probe-selection.env | cut -d= -f2-)
+          BEST_FORMAT_ID=$(grep '^BEST_FORMAT_ID=' probe-selection.env | cut -d= -f2-)
 
-            rm -rf quality-test
+          if [ -n "$BEST_CLIENT" ] && [ -n "$BEST_FORMAT_ID" ]; then
+            echo "===== VERIFYING ACTUAL DOWNLOAD ====="
             mkdir -p quality-test
 
             yt-dlp \
@@ -174,9 +211,10 @@ jobs:
               --extractor-args "youtube:player_client=$BEST_CLIENT" \
               --merge-output-format mkv \
               --download-sections "*0-30" \
-              --format "${BEST_FORMAT_ID}+bestaudio/best" \
+              --format "$BEST_FORMAT_ID+bestaudio/best" \
               --output "quality-test/%(title)s [quality-test].%(ext)s" \
-              "$TEST_VIDEO_URL" 2>&1 | tee quality-test.log
+              "$TEST_VIDEO_URL" \
+              2>&1 | tee quality-test.log
 
             TEST_FILE=$(find quality-test -maxdepth 1 -type f | head -n 1)
             test -n "$TEST_FILE"
@@ -186,16 +224,16 @@ jobs:
               -show_entries stream=codec_name,width,height,r_frame_rate,bit_rate \
               -of default=noprint_wrappers=1 "$TEST_FILE"
           else
-            echo "NO DIRECT DOWNLOAD FORMAT WAS FOUND. No fake 360p fallback will be treated as the maximum quality."
+            echo "NO DIRECT DOWNLOAD FORMAT WAS FOUND. The test will not pretend that 360p is the maximum."
           fi
 
       - name: Diagnostics
         if: always()
         run: |
-          echo "===== Probe diagnostics ====="
+          echo "===== Probe errors ====="
           for f in probe-results/*.err; do
             echo "--- $f ---"
-            tail -n 30 "$f" 2>/dev/null || true
+            cat "$f" 2>/dev/null || true
           done
           echo "===== Quality log ====="
           tail -n 200 quality-test.log 2>/dev/null || true
