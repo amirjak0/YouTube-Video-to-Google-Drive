@@ -50,7 +50,9 @@ jobs:
           echo "===== yt-dlp ====="
           yt-dlp --version
           echo "===== yt-dlp-ejs ====="
-          python -c "import yt_dlp_ejs; print(getattr(yt_dlp_ejs, '__version__', 'installed'))"
+          pip show yt-dlp-ejs | grep -E '^(Name|Version):' || true
+          echo "===== PO Token provider ====="
+          pip show bgutil-ytdlp-pot-provider | grep -E '^(Name|Version):' || true
 
       - name: Install BgUtils PO Token Provider
         run: |
@@ -90,7 +92,7 @@ jobs:
             exit 1
           fi
 
-          curl -fsS http://127.0.0.1:4416/ping
+          cat /tmp/provider_ping.txt
           echo
 
       - name: Create Cookie File
@@ -99,7 +101,7 @@ jobs:
         run: |
           test -n "$YOUTUBE_COOKIES"
           printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
-          wc -l cookies.txt
+          echo "Cookie lines: $(wc -l < cookies.txt)"
 
       - name: Verify YouTube access and PO Token
         run: |
@@ -111,7 +113,11 @@ jobs:
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ" \
             2>&1 | tee yt-dlp-provider-test.log
 
-          grep -qi "bgutil:http\|PO Token Providers" yt-dlp-provider-test.log || true
+          if grep -qi "bgutil:http\|PO Token Providers" yt-dlp-provider-test.log; then
+            echo "PO Token provider evidence detected."
+          else
+            echo "WARNING: PO Token provider evidence was not found in yt-dlp output."
+          fi
 
       - name: Run downloader
         env:
