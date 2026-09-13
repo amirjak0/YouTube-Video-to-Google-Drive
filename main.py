@@ -1,25 +1,6 @@
 # ==============================================================================
-# 📝 یادداشت‌های فنی و تاریخچه آزمون و خطاها
-# ------------------------------------------------------------------------------
-# ۱. مشکل Watch Later:
-#    این لیست پخش خصوصی است و برنامه بدون احراز هویت کامل به آن دسترسی ندارد.
-#    راه حل: استفاده از یک لیست پخش عمومی یا Unlisted.
-#
-# ۲. مشکل GitHub Actions & State:
-#    فایل downloaded_videos.txt بعد از اتمام هر اجرای GitHub حذف می‌شد.
-#    راه حل: بررسی مستقیم داخل Google Drive برای پیدا کردن فایل‌ها بر اساس video_id.
-#
-# ۳. مسدودسازی IPهای GitHub توسط YouTube:
-#    سرورهای GitHub ممکن است به دلیل حجم درخواست بالا با محدودیت مواجه شوند.
-#    راه حل: استفاده از Cookie مرورگر واقعی کاربر.
-#
-# ۴. چالش JavaScript (EJS):
-#    YouTube برای بعضی درخواست‌ها نیاز به حل JavaScript challenge دارد.
-#    راه حل: نصب yt-dlp[default] و استفاده از Node.js.
-#
-# ۵. مشکل جدید YouTube / SABR:
-#    بعضی clientها دیگر URL مستقیم فرمت‌های باکیفیت را برنمی‌گردانند.
-#    برای همین از default + web_embedded استفاده می‌کنیم.
+# YouTube -> Google Drive
+# دانلود بالاترین کیفیت موجود با yt-dlp + PO Token Provider
 # ==============================================================================
 
 import os
@@ -34,7 +15,7 @@ from google.auth.transport.requests import Request
 
 
 # ==============================================================================
-# تنظیمات لاگ‌گیری
+# Logging
 # ==============================================================================
 
 logging.basicConfig(
@@ -43,27 +24,21 @@ logging.basicConfig(
 )
 
 
-# ==============================================================================
-# تنظیمات اصلی
-# ==============================================================================
-
 DOWNLOAD_FOLDER = 'downloads'
 COOKIE_FILE = 'cookies.txt'
 
 
 # ==============================================================================
-# ساخت پوشه دانلود
+# Environment
 # ==============================================================================
 
 def setup_environment():
-    if not os.path.exists(DOWNLOAD_FOLDER):
-        os.makedirs(DOWNLOAD_FOLDER)
-
-    logging.info(f"پوشه دانلود آماده است: {DOWNLOAD_FOLDER}")
+    os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+    logging.info(f"Download folder ready: {DOWNLOAD_FOLDER}")
 
 
 # ==============================================================================
-# اتصال به Google Drive
+# Google Drive
 # ==============================================================================
 
 def get_gdrive_service():
@@ -72,7 +47,7 @@ def get_gdrive_service():
     refresh_token = os.environ.get("GDRIVE_REFRESH_TOKEN")
 
     if not all([client_id, client_secret, refresh_token]):
-        logging.warning("اطلاعات Google Drive یافت نشد.")
+        logging.error("Google Drive credentials are missing.")
         return None
 
     try:
@@ -87,21 +62,21 @@ def get_gdrive_service():
         creds.refresh(Request())
 
         service = build(
-            'drive',
-            'v3',
+            "drive",
+            "v3",
             credentials=creds
         )
 
-        logging.info("اتصال به Google Drive موفق بود.")
+        logging.info("Google Drive connection successful.")
         return service
 
     except Exception as e:
-        logging.error(f"خطا در اتصال به Google Drive: {e}")
+        logging.error(f"Google Drive connection error: {e}")
         return None
 
 
 # ==============================================================================
-# بررسی وجود ویدیو در Google Drive
+# Check if video already exists
 # ==============================================================================
 
 def video_exists_in_gdrive(service, folder_id, video_id):
@@ -115,40 +90,39 @@ def video_exists_in_gdrive(service, folder_id, video_id):
         results = service.files().list(
             q=query,
             spaces='drive',
-            fields='files(id, name)'
+            fields='files(id,name)'
         ).execute()
 
-        items = results.get('files', [])
-
-        return len(items) > 0
+        return len(results.get("files", [])) > 0
 
     except Exception as e:
-        logging.error(f"خطا در جستجوی فایل در Google Drive: {e}")
+        logging.error(
+            f"Google Drive search error: {e}"
+        )
         return False
 
 
 # ==============================================================================
-# آپلود فایل به Google Drive
+# Upload
 # ==============================================================================
 
 def upload_to_gdrive(service, folder_id, file_path):
-
-    logging.info(
-        f"در حال آپلود فایل به Google Drive: "
-        f"{os.path.basename(file_path)}"
-    )
-
     try:
+        filename = os.path.basename(file_path)
+
+        logging.info(
+            f"Uploading to Google Drive: {filename}"
+        )
 
         file_metadata = {
-            'name': os.path.basename(file_path),
-            'parents': [folder_id]
+            "name": filename,
+            "parents": [folder_id]
         }
 
         mime_type, _ = mimetypes.guess_type(file_path)
 
         if mime_type is None:
-            mime_type = 'application/octet-stream'
+            mime_type = "application/octet-stream"
 
         media = MediaFileUpload(
             file_path,
@@ -156,51 +130,53 @@ def upload_to_gdrive(service, folder_id, file_path):
             resumable=True
         )
 
-        file = service.files().create(
+        result = service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields="id"
         ).execute()
 
         logging.info(
-            f"آپلود موفق بود. "
-            f"شناسه فایل: {file.get('id')}"
+            f"Upload successful. File ID: {result.get('id')}"
         )
 
         return True
 
     except Exception as e:
-
         logging.error(
-            f"خطا در آپلود فایل به Google Drive: {e}"
+            f"Upload error: {e}"
         )
-
         return False
 
 
 # ==============================================================================
-# پردازش Playlist
+# Playlist processing
 # ==============================================================================
 
 def process_playlist():
 
-    playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL")
-    folder_id = os.environ.get("GDRIVE_FOLDER_ID")
+    playlist_url = os.environ.get(
+        "YOUTUBE_PLAYLIST_URL"
+    )
+
+    folder_id = os.environ.get(
+        "GDRIVE_FOLDER_ID"
+    )
 
     if not playlist_url:
         logging.error(
-            "متغیر YOUTUBE_PLAYLIST_URL پیدا نشد."
+            "YOUTUBE_PLAYLIST_URL is missing."
         )
         return
 
     if not folder_id:
         logging.error(
-            "متغیر GDRIVE_FOLDER_ID پیدا نشد."
+            "GDRIVE_FOLDER_ID is missing."
         )
         return
 
     # --------------------------------------------------------------------------
-    # اتصال به Google Drive
+    # Google Drive
     # --------------------------------------------------------------------------
 
     service = get_gdrive_service()
@@ -209,328 +185,370 @@ def process_playlist():
         return
 
     # --------------------------------------------------------------------------
-    # بررسی Cookie
+    # Cookies
     # --------------------------------------------------------------------------
 
-    if not os.path.exists(COOKIE_FILE):
+    cookie_path = (
+        COOKIE_FILE
+        if os.path.exists(COOKIE_FILE)
+        else None
+    )
 
-        logging.warning(
-            f"فایل Cookie با نام {COOKIE_FILE} پیدا نشد."
-        )
-
-        logging.warning(
-            "ممکن است YouTube درخواست‌ها را محدود کند."
-        )
-
+    if cookie_path:
+        logging.info("YouTube cookies detected.")
     else:
-
-        logging.info(
-            f"فایل Cookie پیدا شد: {COOKIE_FILE}"
+        logging.warning(
+            "cookies.txt was not found."
         )
 
     # ==============================================================================
-    # تنظیمات استخراج Playlist
+    # Playlist extractor options
     # ==============================================================================
 
-    ydl_opts = {
+    playlist_opts = {
 
-        # گرفتن اطلاعات ویدیوها بدون دانلود
-        'extract_flat': 'in_playlist',
+        "extract_flat": "in_playlist",
 
-        'quiet': True,
+        "quiet": False,
 
-        # استفاده از Cookie
-        'cookiefile':
-            COOKIE_FILE
-            if os.path.exists(COOKIE_FILE)
-            else None,
+        "cookiefile": cookie_path,
 
-        # استفاده از Node برای JS challenge
-        'js_runtimes': {
-            'node': {}
+        # Node.js for JS challenges
+        "js_runtimes": {
+            "node": {}
         },
 
-        # ----------------------------------------------------------------------
-        # تغییر مهم:
-        #
-        # قبلاً:
-        # player_client=tv,android,web
-        #
-        # اکنون:
-        # player_client=default,web_embedded
-        # ----------------------------------------------------------------------
-
-        'extractor_args': {
-            'youtube': [
-                'player_client=default,web_embedded'
+        # IMPORTANT:
+        # mweb is used because the current yt-dlp PO Token guide
+        # recommends mweb + PO Token Provider for GVS requests.
+        "extractor_args": {
+            "youtube": [
+                "player_client=mweb"
             ]
         }
     }
 
     # ==============================================================================
-    # خواندن Playlist
+    # Read playlist
     # ==============================================================================
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    try:
 
-        logging.info(
-            "در حال دریافت اطلاعات Playlist..."
-        )
+        with yt_dlp.YoutubeDL(playlist_opts) as ydl:
 
-        try:
+            logging.info(
+                "Reading playlist..."
+            )
 
-            playlist_dict = ydl.extract_info(
+            playlist_info = ydl.extract_info(
                 playlist_url,
                 download=False
             )
 
-        except Exception as e:
+    except Exception as e:
 
-            logging.error(
-                f"خطا در دریافت Playlist: {e}"
-            )
+        logging.error(
+            f"Playlist extraction failed: {e}"
+        )
 
-            return
+        return
 
-        # ----------------------------------------------------------------------
-        # بررسی Playlist
-        # ----------------------------------------------------------------------
+    if not playlist_info:
+        logging.error(
+            "Playlist information could not be retrieved."
+        )
+        return
 
-        if not playlist_dict:
+    if "entries" not in playlist_info:
+        logging.error(
+            "No videos were found in playlist."
+        )
+        return
 
-            logging.error(
-                "اطلاعات Playlist دریافت نشد."
-            )
+    # ==============================================================================
+    # Process videos
+    # ==============================================================================
 
-            return
+    for video in playlist_info["entries"]:
 
-        if 'entries' not in playlist_dict:
+        if not video:
+            continue
 
-            logging.error(
-                "هیچ ویدیویی در Playlist پیدا نشد."
-            )
+        video_id = video.get("id")
 
-            return
+        if not video_id:
+            continue
 
-        # ==============================================================================
-        # پردازش تک تک ویدیوها
-        # ==============================================================================
+        # --------------------------------------------------------------------------
+        # Already exists?
+        # --------------------------------------------------------------------------
 
-        for video in playlist_dict['entries']:
-
-            if not video:
-                continue
-
-            video_id = video.get('id')
-
-            if not video_id:
-                continue
-
-            # ------------------------------------------------------------------
-            # بررسی وجود قبلی در Google Drive
-            # ------------------------------------------------------------------
-
-            if video_exists_in_gdrive(
-                service,
-                folder_id,
-                video_id
-            ):
-
-                logging.info(
-                    f"این ویدیو قبلاً در Google Drive وجود دارد و رد شد: "
-                    f"{video_id}"
-                )
-
-                continue
-
-            # ------------------------------------------------------------------
-            # شروع دانلود
-            # ------------------------------------------------------------------
+        if video_exists_in_gdrive(
+            service,
+            folder_id,
+            video_id
+        ):
 
             logging.info(
-                f"در حال دانلود ویدیوی جدید: {video_id}"
+                f"Already exists in Google Drive: {video_id}"
             )
 
-            # ==============================================================================
-            # تنظیمات دانلود
-            # ==============================================================================
+            continue
 
-            download_opts = {
+        logging.info(
+            "=" * 80
+        )
 
-                # ------------------------------------------------------------------
-                # فرمت دانلود
-                #
-                # قبلاً:
-                # bestvideo[vcodec!*=av01]+bestaudio/best
-                #
-                # اکنون:
-                # bestvideo+bestaudio/best
-                #
-                # یعنی محدودیت AV1 حذف شده و yt-dlp خودش بهترین ترکیب موجود
-                # را انتخاب می‌کند.
-                # ------------------------------------------------------------------
+        logging.info(
+            f"Starting download: {video_id}"
+        )
 
-                'format':
-                    'bestvideo+bestaudio/best',
+        logging.info(
+            "Selecting the highest available video + audio quality..."
+        )
 
-                # ------------------------------------------------------------------
-                # نام فایل
-                # ------------------------------------------------------------------
+        # ==============================================================================
+        # Download options
+        # ==============================================================================
 
-                'outtmpl':
-                    f'{DOWNLOAD_FOLDER}/%(title)s [{video_id}].%(ext)s',
+        download_opts = {
 
-                # ------------------------------------------------------------------
-                # خروجی نهایی MKV
-                # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # HIGHEST AVAILABLE QUALITY
+            #
+            # Prefer separate best video + best audio.
+            # If separate streams are unavailable, fallback to best single file.
+            # ----------------------------------------------------------------------
 
-                'merge_output_format':
-                    'mkv',
+            "format": (
+                "bestvideo*+bestaudio/"
+                "best"
+            ),
 
-                # ------------------------------------------------------------------
-                # Cookie
-                # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # Output file
+            # ----------------------------------------------------------------------
 
-                'cookiefile':
-                    COOKIE_FILE
-                    if os.path.exists(COOKIE_FILE)
-                    else None,
+            "outtmpl": (
+                f"{DOWNLOAD_FOLDER}/"
+                "%(title)s "
+                f"[{video_id}].%(ext)s"
+            ),
 
-                # ------------------------------------------------------------------
-                # JavaScript runtime
-                # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # Final container
+            # ----------------------------------------------------------------------
 
-                'js_runtimes': {
-                    'node': {}
-                },
+            "merge_output_format": "mkv",
 
-                # ------------------------------------------------------------------
-                # Client جدید YouTube
-                # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # Cookies
+            # ----------------------------------------------------------------------
 
-                'extractor_args': {
-                    'youtube': [
-                        'player_client=default,web_embedded'
-                    ]
-                },
+            "cookiefile": cookie_path,
 
-                # ------------------------------------------------------------------
-                # فاصله بین دانلودها برای کاهش احتمال محدود شدن
-                # ------------------------------------------------------------------
+            # ----------------------------------------------------------------------
+            # JavaScript
+            # ----------------------------------------------------------------------
 
-                'sleep_interval': 5,
+            "js_runtimes": {
+                "node": {}
+            },
 
-                'max_sleep_interval': 15,
+            # ----------------------------------------------------------------------
+            # IMPORTANT:
+            # Use mweb so the installed PO Token Provider can generate the
+            # required token automatically.
+            # ----------------------------------------------------------------------
 
-                # ------------------------------------------------------------------
-                # اگر یک ویدیو مشکل داشت، کل برنامه متوقف نشود
-                # ------------------------------------------------------------------
+            "extractor_args": {
+                "youtube": [
+                    "player_client=mweb"
+                ]
+            },
 
-                'ignoreerrors': True
-            }
+            # ----------------------------------------------------------------------
+            # Sorting:
+            # highest resolution first
+            # highest fps first
+            # highest bitrate first
+            # ----------------------------------------------------------------------
 
-            # ==============================================================================
-            # دانلود ویدیو
-            # ==============================================================================
+            "format_sort": [
+                "res",
+                "fps",
+                "br",
+                "vcodec:av01",
+                "acodec"
+            ],
 
-            try:
+            # ----------------------------------------------------------------------
+            # Keep going if one video fails
+            # ----------------------------------------------------------------------
 
-                with yt_dlp.YoutubeDL(download_opts) as dl:
+            "ignoreerrors": True,
 
-                    info = dl.extract_info(
-                        video.get('url') or video_id,
-                        download=True
+            # ----------------------------------------------------------------------
+            # Small delay between videos
+            # ----------------------------------------------------------------------
+
+            "sleep_interval": 5,
+
+            "max_sleep_interval": 15,
+
+            # ----------------------------------------------------------------------
+            # Log format selection clearly
+            # ----------------------------------------------------------------------
+
+            "verbose": True
+        }
+
+        # ==============================================================================
+        # Download
+        # ==============================================================================
+
+        try:
+
+            with yt_dlp.YoutubeDL(download_opts) as dl:
+
+                info = dl.extract_info(
+                    video.get("url") or video_id,
+                    download=True
+                )
+
+                if info is None:
+
+                    logging.warning(
+                        f"Download failed or video unavailable: {video_id}"
                     )
 
-                    # ------------------------------------------------------------------
-                    # اگر دانلود انجام نشد
-                    # ------------------------------------------------------------------
+                    continue
 
-                    if info is None:
+                # ------------------------------------------------------------------
+                # Print selected format information
+                # ------------------------------------------------------------------
 
-                        logging.warning(
-                            f"امکان دانلود ویدیو وجود ندارد: {video_id}"
+                requested_formats = info.get(
+                    "requested_formats"
+                )
+
+                if requested_formats:
+
+                    logging.info(
+                        "Selected separate video/audio streams:"
+                    )
+
+                    for fmt in requested_formats:
+
+                        logging.info(
+                            "  "
+                            f"format_id={fmt.get('format_id')} "
+                            f"resolution={fmt.get('resolution')} "
+                            f"fps={fmt.get('fps')} "
+                            f"vcodec={fmt.get('vcodec')} "
+                            f"acodec={fmt.get('acodec')} "
+                            f"tbr={fmt.get('tbr')}"
+                        )
+
+                else:
+
+                    logging.info(
+                        "Selected single format: "
+                        f"{info.get('format_id')}"
+                    )
+
+                # ------------------------------------------------------------------
+                # Find downloaded file
+                # ------------------------------------------------------------------
+
+                file_path = dl.prepare_filename(info)
+
+                # ------------------------------------------------------------------
+                # After merge the extension can become MKV
+                # ------------------------------------------------------------------
+
+                if not os.path.exists(file_path):
+
+                    base_path = os.path.splitext(
+                        file_path
+                    )[0]
+
+                    possible_paths = [
+                        base_path + ".mkv",
+                        base_path + ".mp4",
+                        base_path + ".webm"
+                    ]
+
+                    found = False
+
+                    for candidate in possible_paths:
+
+                        if os.path.exists(candidate):
+
+                            file_path = candidate
+                            found = True
+                            break
+
+                    if not found:
+
+                        logging.error(
+                            f"Downloaded file was not found: "
+                            f"{file_path}"
                         )
 
                         continue
 
-                    # ------------------------------------------------------------------
-                    # پیدا کردن مسیر فایل دانلود شده
-                    # ------------------------------------------------------------------
+                # ------------------------------------------------------------------
+                # Upload
+                # ------------------------------------------------------------------
 
-                    file_path = dl.prepare_filename(info)
+                if os.path.exists(file_path):
 
-                    # ------------------------------------------------------------------
-                    # گاهی بعد از Merge پسوند فایل به MKV تغییر می‌کند
-                    # ------------------------------------------------------------------
+                    logging.info(
+                        f"Downloaded file: {file_path}"
+                    )
 
-                    if not os.path.exists(file_path):
-
-                        base_path = os.path.splitext(
-                            file_path
-                        )[0]
-
-                        mkv_path = base_path + '.mkv'
-
-                        if os.path.exists(mkv_path):
-
-                            file_path = mkv_path
+                    upload_ok = upload_to_gdrive(
+                        service,
+                        folder_id,
+                        file_path
+                    )
 
                     # ------------------------------------------------------------------
-                    # بررسی وجود فایل
+                    # Delete local file only after successful upload
                     # ------------------------------------------------------------------
 
-                    if os.path.exists(file_path):
+                    if upload_ok:
 
-                        logging.info(
-                            f"فایل دانلود شد: {file_path}"
-                        )
+                        try:
 
-                        # --------------------------------------------------------------
-                        # آپلود به Google Drive
-                        # --------------------------------------------------------------
+                            os.remove(file_path)
 
-                        upload_success = upload_to_gdrive(
-                            service,
-                            folder_id,
-                            file_path
-                        )
+                            logging.info(
+                                "Local file deleted after successful upload."
+                            )
 
-                        # --------------------------------------------------------------
-                        # حذف فایل بعد از آپلود موفق
-                        # --------------------------------------------------------------
+                        except Exception as e:
 
-                        if upload_success:
+                            logging.warning(
+                                f"Could not delete local file: {e}"
+                            )
 
-                            try:
+                else:
 
-                                os.remove(file_path)
+                    logging.error(
+                        "Final downloaded file does not exist."
+                    )
 
-                                logging.info(
-                                    "فایل بعد از آپلود موفق از سرور حذف شد."
-                                )
+        except Exception as e:
 
-                            except Exception as delete_error:
-
-                                logging.warning(
-                                    f"حذف فایل ممکن نبود: {delete_error}"
-                                )
-
-                    else:
-
-                        logging.error(
-                            f"فایل دانلود شده پیدا نشد: {file_path}"
-                        )
-
-            except Exception as e:
-
-                logging.error(
-                    f"خطا در پردازش ویدیو {video_id}: {e}"
-                )
+            logging.error(
+                f"Error processing {video_id}: {e}"
+            )
 
 
 # ==============================================================================
-# اجرای برنامه
+# Main
 # ==============================================================================
 
 if __name__ == "__main__":
