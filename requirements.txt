@@ -1,6 +1,7 @@
-yt-dlp>=2025.01.01
-yt-dlp-ejs>=0.1.0
-google-api-python-client>=2.100.0
-google-auth>=2.23.0
-google-auth-oauthlib>=1.1.0
-requests>=2.31.0
+yt-dlp==2024.11.04
+google-api-python-client==2.152.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+mutagen==1.47.0
+Pillow==11.0.0
+requests==2.32.3
