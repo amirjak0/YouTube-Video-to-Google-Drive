@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
 YouTube Video to Google Drive - High Quality Auto-Updater & Synchronizer
-========================================================================
-- Bypasses SABR throttling and 360p lock using multi-client routing (ios, android, tv).
-- Immune to YouTube 'The page needs to be reloaded' by isolating cookie-less mobile clients.
-- Scans Google Drive for existing files:
-    * If a video is already in Drive at 360p/720p and 1080p+ is available,
-      it downloads the high-res version, uploads it, and purges the old lower-res copy.
-    * If already at max resolution, skips redundant re-downloading.
 """
 
 import os
@@ -37,8 +30,7 @@ logger = logging.getLogger("yt-gdrive-sync")
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Candidate clients for format detection 
-# مرتب‌شده بر اساس احتمال ارائه کیفیت بالاتر (4K) در سریع‌ترین زمان
+# Candidate clients (tv is first because it provides 4K)
 PLAYER_CLIENT_CANDIDATES = [
     "tv",
     "web",
@@ -51,7 +43,6 @@ PLAYER_CLIENT_CANDIDATES = [
 
 
 def get_gdrive_service():
-    """Initializes Google Drive API client using Refresh Token or OAuth credentials."""
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
     client_secret = os.environ.get("GDRIVE_CLIENT_SECRET")
     refresh_token = os.environ.get("GDRIVE_REFRESH_TOKEN")
@@ -76,33 +67,26 @@ def get_gdrive_service():
 
 
 def parse_video_id_and_quality(filename: str) -> Tuple[Optional[str], int]:
-    """Extracts video ID and resolution height from filenames."""
     video_id = None
     quality_height = 0
-
     id_matches = re.findall(r"\[([a-zA-Z0-9_-]{11})\]", filename)
     if id_matches:
         video_id = id_matches[-1]
-
     quality_matches = re.findall(r"(\d{3,4})p", filename, re.IGNORECASE)
     if quality_matches:
         try:
             quality_height = int(quality_matches[-1])
         except ValueError:
             quality_height = 0
-
     return video_id, quality_height
 
 
 def scan_drive_folder(service, folder_id: str) -> Dict[str, Dict[str, Any]]:
-    """Scans Google Drive folder to detect existing video resolutions."""
     if not service or not folder_id:
         return {}
-
     logger.info(f"Scanning existing files in Google Drive folder: {folder_id}...")
     existing = {}
     page_token = None
-
     while True:
         try:
             query = f"'{folder_id}' in parents and trashed = false"
@@ -112,7 +96,6 @@ def scan_drive_folder(service, folder_id: str) -> Dict[str, Dict[str, Any]]:
                 pageSize=100,
                 pageToken=page_token
             ).execute()
-
             for item in res.get("files", []):
                 name = item.get("name", "")
                 vid_id, height = parse_video_id_and_quality(name)
@@ -123,33 +106,23 @@ def scan_drive_folder(service, folder_id: str) -> Dict[str, Dict[str, Any]]:
                         "height": height,
                         "size": int(item.get("size") or 0)
                     }
-
             page_token = res.get("nextPageToken")
             if not page_token:
                 break
         except Exception as e:
             logger.error(f"Error reading Drive folder contents: {e}")
             break
-
-    logger.info(f"Found {len(existing)} existing videos in Google Drive folder.")
+    logger.info(f"Found {len(existing)} existing videos in Google Drive.")
     return existing
 
 
 def upload_to_drive(service, file_path: Path, folder_id: str, old_file_id: Optional[str] = None) -> Optional[str]:
-    """Uploads file to Google Drive and purges the old lower-quality file if updating."""
     if not service:
-        logger.info(f"[DRIVE-LOCAL-MODE] Skipping live upload (file saved locally at {file_path}).")
         return "local_saved"
-
     filename = file_path.name
     logger.info(f"Uploading '{filename}' ({file_path.stat().st_size / (1024*1024):.1f} MB) to Drive...")
-
-    file_metadata = {
-        "name": filename,
-        "parents": [folder_id]
-    }
+    file_metadata = {"name": filename, "parents": [folder_id]}
     media = MediaFileUpload(str(file_path), resumable=True)
-
     try:
         req = service.files().create(body=file_metadata, media_body=media, fields="id, name")
         response = None
@@ -157,47 +130,37 @@ def upload_to_drive(service, file_path: Path, folder_id: str, old_file_id: Optio
             status, response = req.next_chunk()
             if status:
                 logger.info(f"Upload progress: {int(status.progress() * 100)}%")
-
         new_file_id = response.get("id")
-        logger.info(f"Upload successful! Google Drive File ID: {new_file_id}")
-
+        logger.info(f"Upload successful! File ID: {new_file_id}")
         if old_file_id and old_file_id != new_file_id:
             try:
                 service.files().delete(fileId=old_file_id).execute()
-                logger.info(f"Purged obsolete lower-resolution file (ID: {old_file_id}) from Drive.")
+                logger.info(f"Purged old lower-resolution file (ID: {old_file_id})")
             except Exception as del_err:
-                logger.warning(f"Could not remove old file {old_file_id}: {del_err}")
-
+                pass
         return new_file_id
     except Exception as e:
-        logger.error(f"Failed to upload {filename} to Google Drive: {e}")
+        logger.error(f"Failed to upload {filename}: {e}")
         return None
 
 
 def verify_file_resolution(file_path: Path) -> int:
-    """Verifies actual video stream height using ffprobe."""
     try:
         cmd = [
-            "ffprobe",
-            "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=height",
-            "-of", "csv=p=0",
-            str(file_path)
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=height", "-of", "csv=p=0", str(file_path)
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         output = res.stdout.strip()
         if output.isdigit():
             return int(output)
-    except Exception as e:
-        logger.debug(f"ffprobe check failed: {e}")
+    except Exception:
+        pass
     return 0
 
 
 def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tuple[Optional[str], int, str]:
-    """Probes player clients to find highest downloadable resolution (bypassing 360p lock)."""
     logger.info(f"Probing video stream formats for {video_url}...")
-
     best_height = 0
     best_client = "ios"
     best_format_id = None
@@ -210,14 +173,20 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             "--js-runtimes", "node",
             "--extractor-args", f"youtube:player_client={client}",
         ]
-        # Do not send cookies to ios/android as they reject web cookies
-        if cookies_path and os.path.exists(cookies_path) and client in ("web", "web_safari", "mweb"):
+        
+        # مهم: ارسال کوکی‌ها برای همه کلاینت‌ها مجاز شد (مخصوصاً برای tv)
+        # تا آی‌پی سرور گیت‌هاب توسط یوتیوب مسدود نشود
+        if cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
+            
         cmd.append(video_url)
 
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+            
+            # خارج کردن ارورها از حالت بی‌صدا!
             if res.returncode != 0:
+                logger.warning(f"❌ Client '{client}' failed! YouTube likely blocked this request from GitHub Actions IP.")
                 continue
 
             info = json.loads(res.stdout)
@@ -230,6 +199,7 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             ]
 
             if not candidate_videos:
+                logger.warning(f"⚠️ Client '{client}' returned NO video formats (bot-check or 360p lock).")
                 continue
 
             candidate_videos.sort(
@@ -245,16 +215,16 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             client_max = candidate_videos[0]
             client_height = int(client_max.get("height") or 0)
 
-            logger.info(f"Client '{client}' max available format: {client_height}p (format_id: {client_max.get('format_id')})")
+            logger.info(f"✅ Client '{client}' max available format: {client_height}p (format_id: {client_max.get('format_id')})")
 
             if client_height > best_height:
                 best_height = client_height
                 best_client = client
                 best_format_id = client_max.get("format_id")
 
-            # شرط خروج هوشمند برای جلوگیری از چک کردن اضافی: اگر 4K پیدا شد، متوقف شو
+            # شرط خروج: اگر 4K پیدا شد سریع متوقف شو
             if best_height >= 2160:
-                logger.info(f"Max expected resolution ({best_height}p) reached via '{client}'. Stopping probe.")
+                logger.info(f"🎯 4K (2160p) resolution reached via '{client}'. Stopping probe.")
                 break
 
         except Exception as err:
@@ -269,64 +239,40 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
     return best_format_id, best_height, best_client
 
 
-def download_video(
-    video_url: str,
-    target_client: str,
-    cookies_path: Optional[str] = None,
-    max_resolution: int = 2160
-) -> Optional[Tuple[Path, int]]:
-    """
-    Downloads best video + audio streams separately and merges via FFmpeg.
-    Uses multi-pass fallback (ios/tv/android without cookies first, avoiding 'page needs to be reloaded').
-    """
+def download_video(video_url: str, target_client: str, cookies_path: Optional[str] = None, max_resolution: int = 2160) -> Optional[Tuple[Path, int]]:
     output_template = str(DOWNLOADS_DIR / "%(title).200B [%(id)s] [%(height)sp].%(ext)s")
     format_selector = f"bestvideo[height<={max_resolution}]+bestaudio/bestvideo+bestaudio/best"
 
     strategies = [
-        {"client": "ios,tv", "use_cookies": False, "desc": "iOS & TV clients (no cookies)"},
-        {"client": "android", "use_cookies": False, "desc": "Android client (no cookies)"},
-        {"client": f"{target_client},android", "use_cookies": False, "desc": f"{target_client} (no cookies)"},
         {"client": target_client, "use_cookies": True, "desc": f"{target_client} (with cookies)"},
+        {"client": "ios,tv", "use_cookies": False, "desc": "iOS & TV clients (no cookies)"},
+        {"client": "android", "use_cookies": False, "desc": "Android client (no cookies)"}
     ]
 
     for strat in strategies:
         for item in DOWNLOADS_DIR.glob("*.*"):
-            try:
-                item.unlink()
-            except Exception:
-                pass
+            try: item.unlink()
+            except: pass
 
         cmd = [
-            "yt-dlp",
-            "--no-playlist",
-            "--merge-output-format", "mkv",
-            "-f", format_selector,
-            "--js-runtimes", "node",
+            "yt-dlp", "--no-playlist", "--merge-output-format", "mkv",
+            "-f", format_selector, "--js-runtimes", "node",
             "--extractor-args", f"youtube:player_client={strat['client']}",
-            "-o", output_template,
-            "--embed-metadata",
-            "--no-mtime",
+            "-o", output_template, "--embed-metadata", "--no-mtime",
         ]
-
         if strat["use_cookies"] and cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
-
         cmd.append(video_url)
 
         logger.info(f"Attempting download via {strat['desc']}...")
         res = subprocess.run(cmd, capture_output=True, text=True)
 
-        if "The page needs to be reloaded" in res.stderr:
-            logger.warning("Encountered YouTube 'The page needs to be reloaded' bot-check. Skipping to next client...")
-            continue
-
         if res.returncode != 0:
-            logger.warning(f"Strategy {strat['desc']} failed (code {res.returncode}): {res.stderr[-300:] if res.stderr else ''}")
+            logger.warning(f"Strategy {strat['desc']} failed (code {res.returncode})")
             continue
 
         downloaded_files = list(DOWNLOADS_DIR.glob("*.mkv")) or list(DOWNLOADS_DIR.glob("*.*"))
-        if not downloaded_files:
-            continue
+        if not downloaded_files: continue
 
         latest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
         actual_height = verify_file_resolution(latest_file)
@@ -337,19 +283,9 @@ def download_video(
     return None
 
 
-def process_single_video(
-    video_url: str,
-    gdrive_service,
-    folder_id: str,
-    existing_drive_files: Dict[str, Dict[str, Any]],
-    update_existing: bool = True,
-    cookies_path: Optional[str] = None,
-    force_quality_limit: int = 2160
-):
-    """Processes video, auto-upgrades if higher resolution exists."""
+def process_single_video(video_url: str, gdrive_service, folder_id: str, existing_drive_files: Dict[str, Dict[str, Any]], update_existing: bool = True, cookies_path: Optional[str] = None, force_quality_limit: int = 2160):
     logger.info(f"\n=======================================================")
     logger.info(f"Processing video: {video_url}")
-
     id_match = re.search(r"(?:v=|\/)([a-zA-Z0-9_-]{11})", video_url)
     video_id = id_match.group(1) if id_match else None
 
@@ -363,7 +299,6 @@ def process_single_video(
         existing_height = existing_entry.get("height", 0)
         old_file_id = existing_entry.get("file_id")
         old_name = existing_entry.get("name")
-
         logger.info(f"Found existing file in Drive: '{old_name}' (Detected resolution: {existing_height}p)")
 
         if existing_height >= available_height and not os.environ.get("FORCE_RETRY"):
@@ -376,32 +311,21 @@ def process_single_video(
             logger.info(f"Update existing is disabled. Skipping {video_id}.")
             return
 
-    download_res = download_video(
-        video_url,
-        target_client=chosen_client,
-        cookies_path=cookies_path,
-        max_resolution=min(force_quality_limit, max(available_height, 1080))
-    )
-
-    if not download_res:
-        logger.error(f"Failed to download high-resolution stream for {video_url}.")
-        return
+    download_res = download_video(video_url, target_client=chosen_client, cookies_path=cookies_path, max_resolution=min(force_quality_limit, max(available_height, 1080)))
+    if not download_res: return
 
     downloaded_file, verified_height = download_res
     uploaded_id = upload_to_drive(gdrive_service, downloaded_file, folder_id, old_file_id=old_file_id)
 
     if uploaded_id:
         logger.info(f"SUCCESS: Video {video_id or ''} synced to Google Drive at {verified_height}p!")
-        try:
-            downloaded_file.unlink()
-        except Exception:
-            pass
+        try: downloaded_file.unlink()
+        except: pass
 
 
 def get_playlist_videos(playlist_url: str) -> List[str]:
     if "list=" not in playlist_url:
         return [playlist_url]
-
     logger.info(f"Extracting video list from playlist: {playlist_url}...")
     cmd = ["yt-dlp", "--flat-playlist", "--print", "url", playlist_url]
     try:
@@ -418,7 +342,6 @@ def main():
     print("================================================================")
     print("YouTube Video to Google Drive - High Quality Auto-Updater & Sync")
     print("================================================================")
-
     playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL") or os.environ.get("YOUTUBE_VIDEO_URL")
     folder_id = os.environ.get("GDRIVE_FOLDER_ID", "")
     update_existing = os.environ.get("UPDATE_EXISTING", "true").lower() in ("true", "1", "yes")
@@ -454,13 +377,9 @@ def main():
             logger.error(f"An unexpected error occurred for {video_url}: {err}")
 
     if cookies_path and os.path.exists(cookies_path):
-        try:
-            os.remove(cookies_path)
-        except Exception:
-            pass
-
+        try: os.remove(cookies_path)
+        except: pass
     logger.info("\nAll tasks completed successfully!")
-
 
 if __name__ == "__main__":
     main()
