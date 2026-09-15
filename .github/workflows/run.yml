@@ -26,16 +26,16 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install dependencies and Headless Browser
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg jq
           pip install -r requirements.txt
+          playwright install --with-deps chromium
 
       - name: Run Sync Script
         env:
           YOUTUBE_VIDEO_URL: ${{ github.event.inputs.video_url }}
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
