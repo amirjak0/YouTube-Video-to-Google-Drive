@@ -408,6 +408,9 @@ def process_single_video(
             downloaded_file.unlink()
         except Exception:
             pass
+        return True
+
+    return False
 
 
 def get_playlist_videos(playlist_url: str, cookies_path: Optional[str] = None) -> List[str]:
