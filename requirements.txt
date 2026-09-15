@@ -1,4 +1,4 @@
-yt-dlp>=2025.01.01
+yt-dlp @ git+https://github.com/yt-dlp/yt-dlp.git@master
 yt-dlp-ejs>=0.1.0
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
