@@ -6,3 +6,9 @@ google-auth-oauthlib==1.2.1
 mutagen==1.47.0
 Pillow==11.0.0
 requests==2.32.3
+
+yt-dlp
+playwright
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
