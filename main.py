@@ -37,15 +37,16 @@ logger = logging.getLogger("yt-gdrive-sync")
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Candidate clients for format detection
+# Candidate clients for format detection 
+# مرتب‌شده بر اساس احتمال ارائه کیفیت بالاتر (4K) در سریع‌ترین زمان
 PLAYER_CLIENT_CANDIDATES = [
-    "ios",
-    "android",
     "tv",
+    "web",
+    "android",
+    "ios",
     "tv_simply",
     "web_safari",
-    "mweb",
-    "web"
+    "mweb"
 ]
 
 
@@ -250,6 +251,11 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
                 best_height = client_height
                 best_client = client
                 best_format_id = client_max.get("format_id")
+
+            # شرط خروج هوشمند برای جلوگیری از چک کردن اضافی: اگر 4K پیدا شد، متوقف شو
+            if best_height >= 2160:
+                logger.info(f"Max expected resolution ({best_height}p) reached via '{client}'. Stopping probe.")
+                break
 
         except Exception as err:
             logger.debug(f"Client {client} probe error: {err}")
