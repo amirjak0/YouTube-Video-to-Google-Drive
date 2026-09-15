@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
+from playwright.sync_api import sync_playwright
+
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from googleapiclient.http import MediaFileUpload
@@ -16,6 +18,43 @@ logger = logging.getLogger(__name__)
 
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
+
+def generate_youtube_cookies(output_file="youtube_cookies.txt"):
+    """
+    Runs an invisible Chrome browser to bypass bot detection
+    and generate fresh YouTube cookies automatically.
+    """
+    logger.info("🚀 Generating fresh YouTube cookies using headless browser...")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+            
+            page.goto("https://www.youtube.com")
+            logger.info("⏳ Waiting for anti-bot bypass...")
+            page.wait_for_timeout(5000) 
+            
+            cookies = context.cookies()
+            
+            with open(output_file, "w") as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                for cookie in cookies:
+                    domain = cookie['domain']
+                    include_subdomains = 'TRUE' if domain.startswith('.') else 'FALSE'
+                    path = cookie['path']
+                    secure = 'TRUE' if cookie['secure'] else 'FALSE'
+                    expires = int(cookie['expires']) if 'expires' in cookie and cookie['expires'] > 0 else 0
+                    name = cookie['name']
+                    value = cookie['value']
+                    f.write(f"{domain}\t{include_subdomains}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
+            
+            browser.close()
+            logger.info(f"✅ Cookies successfully generated at {output_file}")
+            return output_file
+    except Exception as e:
+        logger.error(f"❌ Failed to generate cookies: {e}")
+        return None
 
 def get_gdrive_service():
     client_id = os.environ.get("GDRIVE_CLIENT_ID")
@@ -308,18 +347,17 @@ def main():
     playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL") or os.environ.get("YOUTUBE_VIDEO_URL")
     folder_id = os.environ.get("GDRIVE_FOLDER_ID", "")
     update_existing = os.environ.get("UPDATE_EXISTING", "true").lower() in ("true", "1", "yes")
-    cookies_content = os.environ.get("YOUTUBE_COOKIES")
 
     if not playlist_url:
         logger.error("Error: YOUTUBE_PLAYLIST_URL or YOUTUBE_VIDEO_URL environment variable is required.")
         sys.exit(1)
 
-    cookies_path = None
-    if cookies_content and len(cookies_content.strip()) > 10:
-        cookies_path = "youtube_cookies.txt"
-        with open(cookies_path, "w", encoding="utf-8") as f:
-            f.write(cookies_content)
-        logger.info("Loaded YouTube authentication cookies from environment.")
+    # -----------------------------------------------------------------
+    # Generate cookies automatically via headless browser
+    # -----------------------------------------------------------------
+    cookies_path = generate_youtube_cookies()
+    if not cookies_path:
+        logger.warning("Proceeding without YouTube cookies (Downloads may fail for restricted videos).")
 
     service = get_gdrive_service()
     existing_drive_files = scan_drive_folder(service, folder_id) if (service and folder_id) else {}
