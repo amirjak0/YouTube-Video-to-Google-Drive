@@ -1,36 +1,46 @@
-name: YouTube to Drive Sync
+name: Manual Sync Video
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'YouTube Video or Playlist URL'
-        required: true
-        type: string
+        description: 'YouTube Video URL (leave empty if using PLAYLIST_URL environment variable)'
+        required: false
+        default: ''
+      force_retry:
+        description: 'Force re-download and re-upload even if video exists'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  run-sync:
+  sync:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
           pip install -r requirements.txt
-          playwright install --with-deps chromium
 
       - name: Run Sync Script
         env:
+          YOUTUBE_VIDEO_URL: ${{ github.event.inputs.video_url }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-          # متغیر کوکی را حذف کردیم چون حالا خودش کوکی میسازد
-          YOUTUBE_VIDEO_URL: ${{ github.event.inputs.video_url }}
+          FORCE_QUALITY_LIMIT: ${{ vars.FORCE_QUALITY_LIMIT }}
+          UPDATE_EXISTING: ${{ vars.UPDATE_EXISTING }}
+          FORCE_RETRY: ${{ github.event.inputs.force_retry == 'true' && '1' || '' }}
         run: python main.py
