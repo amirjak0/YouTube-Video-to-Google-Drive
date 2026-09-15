@@ -251,9 +251,6 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
                 best_client = client
                 best_format_id = client_max.get("format_id")
 
-            if best_height >= 1080:
-                break
-
         except Exception as err:
             logger.debug(f"Client {client} probe error: {err}")
             continue
