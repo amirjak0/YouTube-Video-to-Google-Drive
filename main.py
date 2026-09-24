@@ -174,8 +174,6 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             "--extractor-args", f"youtube:player_client={client}",
         ]
         
-        # مهم: ارسال کوکی‌ها برای همه کلاینت‌ها مجاز شد (مخصوصاً برای tv)
-        # تا آی‌پی سرور گیت‌هاب توسط یوتیوب مسدود نشود
         if cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
             
@@ -184,9 +182,8 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
             
-            # خارج کردن ارورها از حالت بی‌صدا!
             if res.returncode != 0:
-                logger.warning(f"❌ Client '{client}' failed! YouTube likely blocked this request from GitHub Actions IP.")
+                logger.warning(f"❌ Client '{client}' failed! YouTube likely blocked this request.")
                 continue
 
             info = json.loads(res.stdout)
@@ -199,7 +196,7 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             ]
 
             if not candidate_videos:
-                logger.warning(f"⚠️ Client '{client}' returned NO video formats (bot-check or 360p lock).")
+                logger.warning(f"⚠️ Client '{client}' returned NO video formats.")
                 continue
 
             candidate_videos.sort(
@@ -222,7 +219,6 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
                 best_client = client
                 best_format_id = client_max.get("format_id")
 
-            # شرط خروج: اگر 4K پیدا شد سریع متوقف شو
             if best_height >= 2160:
                 logger.info(f"🎯 4K (2160p) resolution reached via '{client}'. Stopping probe.")
                 break
@@ -342,7 +338,7 @@ def main():
     print("================================================================")
     print("YouTube Video to Google Drive - High Quality Auto-Updater & Sync")
     print("================================================================")
-    playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL") or os.environ.get("YOUTUBE_VIDEO_URL")
+    playlist_url = os.environ.get("YOUTUBE_PLAYLIST_URL") or os.environ.get("YOUTUBE_VIDEO_URL") or "https://www.youtube.com/playlist?list=PLANLPlXI3s4o"
     folder_id = os.environ.get("GDRIVE_FOLDER_ID", "")
     update_existing = os.environ.get("UPDATE_EXISTING", "true").lower() in ("true", "1", "yes")
     cookies_content = os.environ.get("YOUTUBE_COOKIES")

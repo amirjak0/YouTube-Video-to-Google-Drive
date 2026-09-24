@@ -1,0 +1,8 @@
+{
+  "name": "YouTube Video to Google Drive",
+  "description": "Automated YouTube playlist and video synchronizer to Google Drive with multi-client format probing, resolution auto-upgrade, and Drive management.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

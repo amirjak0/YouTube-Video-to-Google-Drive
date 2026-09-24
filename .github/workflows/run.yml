@@ -46,7 +46,7 @@ jobs:
 
       - name: Run downloader
         env:
-          YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL }}
+          YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL || 'https://www.youtube.com/playlist?list=PLANLPlXI3s4o' }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
