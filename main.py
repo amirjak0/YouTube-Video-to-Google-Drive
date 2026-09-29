@@ -30,7 +30,7 @@ logger = logging.getLogger("yt-gdrive-sync")
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-PLAYER_CLIENT_CANDIDATES = ["ios", "android", "tv", "tv_simply", "web_safari", "mweb", "web"]
+PLAYER_CLIENT_CANDIDATES = ["web", "tv", "web_safari", "ios", "android", "tv_simply", "mweb"]
 
 def get_gdrive_service():
     """Initializes Google Drive API client using Refresh Token or OAuth credentials."""
@@ -117,7 +117,7 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
     best_height, best_client, best_format_id = 0, "ios", None
     for client in PLAYER_CLIENT_CANDIDATES:
         cmd = ["yt-dlp", "--dump-single-json", "--no-playlist", "--js-runtimes", "node", "--extractor-args", f"youtube:player_client={client}"]
-        if cookies_path and os.path.exists(cookies_path) and client in ("web", "web_safari", "mweb"):
+        if cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
         cmd.append(video_url)
         try:
@@ -139,7 +139,18 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
 def download_video(video_url: str, target_client: str, cookies_path: Optional[str] = None, max_resolution: int = 2160) -> Optional[Tuple[Path, int]]:
     output_template = str(DOWNLOADS_DIR / "%(title).200B [%(id)s] [%(height)sp].%(ext)s")
     format_selector = f"bestvideo[height<={max_resolution}]+bestaudio/bestvideo+bestaudio/best"
-    strategies = [{"client":"ios,tv","use_cookies":False,"desc":"iOS & TV clients (no cookies)"},{"client":"android","use_cookies":False,"desc":"Android client (no cookies)"},{"client":f"{target_client},android","use_cookies":False,"desc":f"{target_client} (no cookies)"},{"client":target_client,"use_cookies":True,"desc":f"{target_client} (with cookies)"}]
+    strategies = []
+    if cookies_path and os.path.exists(cookies_path):
+        strategies.extend([
+            {"client": "web", "use_cookies": True, "desc": "Desktop Web client (with cookies)"},
+            {"client": "tv,web_safari", "use_cookies": True, "desc": "TV & Safari client (with cookies)"},
+            {"client": target_client, "use_cookies": True, "desc": f"{target_client} (with cookies)"},
+        ])
+    strategies.extend([
+        {"client": "ios,tv", "use_cookies": False, "desc": "iOS & TV clients (no cookies)"},
+        {"client": "android", "use_cookies": False, "desc": "Android client (no cookies)"},
+        {"client": f"{target_client},android", "use_cookies": False, "desc": f"{target_client} (no cookies)"},
+    ])
     for strat in strategies:
         for item in DOWNLOADS_DIR.glob("*.*"):
             try: item.unlink()
