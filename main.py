@@ -17,6 +17,7 @@ import sys
 import json
 import logging
 import subprocess
+import concurrent.futures
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -147,9 +148,11 @@ def verify_file_resolution(file_path: Path) -> int:
     return 0
 
 
-def cleanup_downloads():
+def cleanup_downloads(video_id: str = None):
     for item in DOWNLOADS_DIR.iterdir():
         if item.is_file():
+            if video_id and video_id not in item.name:
+                continue
             try:
                 item.unlink()
             except Exception:
@@ -233,6 +236,9 @@ def download_video(
     """Download high-quality video and reject low-resolution results."""
     output_template = str(DOWNLOADS_DIR / "%(title).200B [%(id)s] [%(height)sp].%(ext)s")
 
+    id_match = re.search(r"(?:v=|/)([a-zA-Z0-9_-]{11})", video_url)
+    video_id = id_match.group(1) if id_match else ""
+
     # Try the exact probed format first. Then try bestvideo+bestaudio through
     # the same client. Finally use other clients as fallbacks.
     clients = []
@@ -258,7 +264,7 @@ def download_video(
         ))
 
         for format_selector, format_desc in strategies:
-            cleanup_downloads()
+            cleanup_downloads(video_id)
             cmd = [
                 "yt-dlp", "--no-playlist",
                 "--merge-output-format", "mkv",
@@ -289,7 +295,7 @@ def download_video(
                 )
                 continue
 
-            downloaded_files = list(DOWNLOADS_DIR.glob("*.mkv")) or list(DOWNLOADS_DIR.glob("*.*"))
+            downloaded_files = list(DOWNLOADS_DIR.glob(f"*{video_id}*.mkv")) or list(DOWNLOADS_DIR.glob(f"*{video_id}*.*"))
             if not downloaded_files:
                 continue
 
@@ -304,7 +310,7 @@ def download_video(
                     f"REJECTED: downloaded file is only {actual_height}p; "
                     f"minimum acceptable is {min_acceptable}p. Trying another strategy/client."
                 )
-                cleanup_downloads()
+                cleanup_downloads(video_id)
                 continue
 
             return latest_file, actual_height
@@ -440,20 +446,33 @@ def main():
     existing_drive_files = scan_drive_folder(service, folder_id) if (service and folder_id) else {}
     video_urls = get_playlist_videos(playlist_url)
 
-    for idx, video_url in enumerate(video_urls, 1):
-        logger.info(f"\nProcessing [{idx}/{len(video_urls)}]: {video_url}")
-        try:
-            process_single_video(
+    max_workers = 3  # تعداد دانلودهای همزمان
+    logger.info(f"\nStarting concurrent processing with {max_workers} workers...")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for idx, video_url in enumerate(video_urls, 1):
+            # ایجاد یک سرویس جدید برای هر رشته جهت جلوگیری از تداخل
+            thread_service = get_gdrive_service()
+            
+            future = executor.submit(
+                process_single_video,
                 video_url,
-                service,
+                thread_service,
                 folder_id,
                 existing_drive_files,
                 update_existing,
                 cookies_path,
                 force_quality_limit=force_quality_limit,
             )
-        except Exception as err:
-            logger.error(f"An unexpected error occurred for {video_url}: {err}")
+            futures[future] = (idx, video_url)
+
+        for future in concurrent.futures.as_completed(futures):
+            idx, video_url = futures[future]
+            try:
+                future.result()
+            except Exception as err:
+                logger.error(f"An unexpected error occurred for {video_url}: {err}")
 
     if cookies_path and os.path.exists(cookies_path):
         try:
