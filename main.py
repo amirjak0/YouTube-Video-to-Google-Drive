@@ -31,7 +31,7 @@ logger = logging.getLogger("yt-gdrive-sync")
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-PLAYER_CLIENT_CANDIDATES = ["web", "tv", "web_safari", "ios", "android", "tv_simply", "mweb"]
+PLAYER_CLIENT_CANDIDATES = ["default", "tv", "ios", "android", "web", "mweb"]
 
 
 def get_gdrive_service():
@@ -167,8 +167,10 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
         cmd = [
             "yt-dlp", "--dump-single-json", "--no-playlist",
             "--js-runtimes", "node",
-            "--extractor-args", f"youtube:player_client={client}",
         ]
+        if client != "default":
+            cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
+            
         if cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
         cmd.append(video_url)
@@ -262,12 +264,14 @@ def download_video(
                 "--merge-output-format", "mkv",
                 "-f", format_selector,
                 "--js-runtimes", "node",
-                "--extractor-args", f"youtube:player_client={client}",
                 "-o", output_template,
                 "--embed-metadata",
                 "--no-mtime",
                 "--no-overwrites",
             ]
+            if client != "default":
+                cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
+                
             if cookies_path and os.path.exists(cookies_path):
                 cmd.extend(["--cookies", cookies_path])
             cmd.append(video_url)
