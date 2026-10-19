@@ -181,6 +181,11 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
             if res.returncode != 0:
+                details = (res.stderr or res.stdout or "no error output").strip()
+                logger.warning(
+                    f"Probe failed for client '{client}' (exit {res.returncode}): "
+                    f"{details[-1200:]}"
+                )
                 continue
             info = json.loads(res.stdout)
             formats = info.get("formats", [])
@@ -194,6 +199,10 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
                 candidates.append(f)
 
             if not candidates:
+                logger.warning(
+                    f"Client '{client}' returned no usable video formats for {video_url}. "
+                    f"yt-dlp output: {(res.stderr or 'no stderr output')[-600:]}"
+                )
                 continue
 
             candidates.sort(
@@ -220,6 +229,10 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
             logger.debug(f"Client {client} probe error: {err}")
 
     if not best_format_id:
+        logger.error(
+            f"No video stream found for {video_url}. All player-client probes failed; "
+            "review the warnings above for the actual yt-dlp/YouTube error."
+        )
         return None, 0, ""
 
     return best_format_id, best_height, best_client
@@ -338,7 +351,7 @@ def process_single_video(
     best_format_id, available_height, chosen_client = probe_best_format(video_url, cookies_path)
     if not best_format_id or available_height <= 0:
         logger.error("Could not find a usable video stream from any player client.")
-        return
+        return False
 
     requested_max = min(force_quality_limit, available_height)
     logger.info(
@@ -359,11 +372,11 @@ def process_single_video(
                 f"Video {video_id} is already at max detected resolution "
                 f"({existing_height}p >= {available_height}p). Skipping."
             )
-            return
+            return True
 
         if not update_existing and not os.environ.get("FORCE_RETRY"):
             logger.info(f"Update existing is disabled. Skipping {video_id}.")
-            return
+            return True
 
     download_res = download_video(
         video_url,
@@ -375,7 +388,7 @@ def process_single_video(
     )
     if not download_res:
         logger.error(f"Failed to obtain an acceptable high-resolution stream for {video_url}.")
-        return
+        return False
 
     downloaded_file, verified_height = download_res
 
@@ -389,7 +402,7 @@ def process_single_video(
             downloaded_file.unlink()
         except Exception:
             pass
-        return
+        return False
 
     uploaded_id = upload_to_drive(
         gdrive_service,
@@ -403,6 +416,10 @@ def process_single_video(
             downloaded_file.unlink()
         except Exception:
             pass
+        return True
+
+    logger.error(f"Sync failed for video {video_id or video_url}: upload did not complete.")
+    return False
 
 
 def get_playlist_videos(playlist_url: str) -> List[str]:
@@ -449,6 +466,9 @@ def main():
     max_workers = 3  # تعداد دانلودهای همزمان
     logger.info(f"\nStarting concurrent processing with {max_workers} workers...")
 
+    success_count = 0
+    failure_count = 0
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
         for idx, video_url in enumerate(video_urls, 1):
@@ -470,9 +490,15 @@ def main():
         for future in concurrent.futures.as_completed(futures):
             idx, video_url = futures[future]
             try:
-                future.result()
+                succeeded = future.result()
+                if succeeded:
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    logger.error(f"Video task failed: {video_url}")
             except Exception as err:
-                logger.error(f"An unexpected error occurred for {video_url}: {err}")
+                failure_count += 1
+                logger.exception(f"An unexpected error occurred for {video_url}: {err}")
 
     if cookies_path and os.path.exists(cookies_path):
         try:
@@ -480,7 +506,14 @@ def main():
         except Exception:
             pass
 
-    logger.info("\nAll tasks completed successfully!")
+    logger.info(
+        f"\nRun summary: {success_count} succeeded, {failure_count} failed "
+        f"out of {len(video_urls)} video task(s)."
+    )
+    if failure_count:
+        logger.error("One or more video tasks failed; marking this GitHub Actions run as failed.")
+        sys.exit(1)
+    logger.info("All video tasks completed successfully.")
 
 
 if __name__ == "__main__":
