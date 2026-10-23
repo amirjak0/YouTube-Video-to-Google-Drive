@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   transfer:
@@ -56,3 +57,13 @@ jobs:
           FORCE_QUALITY_LIMIT: ${{ github.event.inputs.force_quality || '2160' }}
         run: |
           python main.py
+
+      - name: Keep only the latest 5 workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_ids=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/run.yml/runs?per_page=100" --jq 'add | .workflow_runs | sort_by(.created_at) | reverse | .[5:] | .[].id')
+          for run_id in $run_ids; do
+            echo "Deleting old workflow run: $run_id"
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" || echo "Could not delete run $run_id"
+          done
