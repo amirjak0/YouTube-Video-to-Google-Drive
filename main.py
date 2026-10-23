@@ -243,11 +243,11 @@ def download_video(
         strategies = []
         if preferred_format:
             strategies.append((
-                f"{preferred_format}+bestaudio/{preferred_format}",
+                f"{preferred_format}+bestaudio[language=en]/{preferred_format}+bestaudio/{preferred_format}",
                 f"exact probed format {preferred_format}"
             ))
         strategies.append((
-            f"bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]",
+            f"bestvideo[height<={max_resolution}]+bestaudio[language=en]/bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]",
             f"best available <= {max_resolution}p"
         ))
         # استراتژی جدید: دانلود فایل یکپارچه برای دور زدن خطای امنیتی یوتوب
