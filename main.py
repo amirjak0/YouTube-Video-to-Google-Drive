@@ -261,6 +261,9 @@ def download_video(
             cmd = [
                 "yt-dlp", "--no-playlist",
                 "--merge-output-format", "mkv",
+                # Force yt-dlp to prioritize the original-language audio track over auto-dubbed tracks.
+                "--format-sort-force",
+                "-S", "lang",
                 "-f", format_selector,
                 "--js-runtimes", "node",
                 "-o", output_template,
