@@ -144,20 +144,47 @@ def cleanup_downloads(video_id: str = None):
             except Exception:
                 pass
 
-def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tuple[Optional[str], int, str]:
+def is_english_audio_format(fmt: Dict[str, Any]) -> bool:
+    """Identify English audio tracks using the format language or format note."""
+    language = str(fmt.get("language") or "").strip().lower().replace("_", "-")
+    unknown_languages = {"", "und", "unknown", "none", "n/a"}
+    if language not in unknown_languages:
+        return (
+            language in ("en", "eng", "english")
+            or language.startswith(("en-", "eng-", "english "))
+        )
+
+    # Some extractor/client combinations put the language only in format_note.
+    return "english" in str(fmt.get("format_note") or "").strip().lower()
+
+
+def probe_best_format(
+    video_url: str,
+    cookies_path: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], int, str, bool]:
+    """
+    Find the best video stream with English audio.
+    Returns (video_format_id, English_audio_format_id, height, client, is_muxed).
+    """
     logger.info(f"Probing video stream formats for {video_url}...")
     best_height = 0
-    best_client = None
-    best_format_id = None
+    best_client = ""
+    best_video_format_id = None
+    best_audio_format_id = None
+    best_format_is_muxed = False
 
     for client in PLAYER_CLIENT_CANDIDATES:
+        extractor_args = (
+            f"youtube:player_client={client};lang=en"
+            if client != "default"
+            else "youtube:lang=en"
+        )
         cmd = [
             "yt-dlp", "--dump-single-json", "--no-playlist",
             "--js-runtimes", "node",
+            "--extractor-args", extractor_args,
         ]
-        if client != "default":
-            cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
-            
+
         if cookies_path and os.path.exists(cookies_path):
             cmd.extend(["--cookies", cookies_path])
         cmd.append(video_url)
@@ -171,50 +198,100 @@ def probe_best_format(video_url: str, cookies_path: Optional[str] = None) -> Tup
                     f"{details[-1200:]}"
                 )
                 continue
+
             info = json.loads(res.stdout)
             formats = info.get("formats", [])
 
-            candidates = []
-            for f in formats:
-                height = int(f.get("height") or 0)
-                vcodec = f.get("vcodec")
-                if vcodec in (None, "none") or height <= 0:
+            english_audio = [
+                f for f in formats
+                if f.get("vcodec") in (None, "none")
+                and f.get("acodec") not in (None, "none")
+                and f.get("format_id") is not None
+                and is_english_audio_format(f)
+            ]
+            video_only = [
+                f for f in formats
+                if f.get("vcodec") not in (None, "none")
+                and f.get("acodec") in (None, "none")
+                and int(f.get("height") or 0) > 0
+                and f.get("format_id") is not None
+            ]
+
+            video_key = lambda f: (
+                int(f.get("height") or 0),
+                int(f.get("width") or 0),
+                float(f.get("fps") or 0),
+                float(f.get("vbr") or f.get("tbr") or 0),
+            )
+            audio_key = lambda f: (
+                float(f.get("abr") or f.get("tbr") or 0),
+                int(f.get("asr") or 0),
+                int(f.get("filesize") or f.get("filesize_approx") or 0),
+            )
+
+            if video_only and english_audio:
+                top_video = max(video_only, key=video_key)
+                top_audio = max(english_audio, key=audio_key)
+                client_height = int(top_video.get("height") or 0)
+                video_format_id = str(top_video["format_id"])
+                audio_format_id = str(top_audio["format_id"])
+                is_muxed = False
+                logger.info(
+                    f"Client '{client}' has {client_height}p video format "
+                    f"{video_format_id} and English audio format {audio_format_id}."
+                )
+            else:
+                # If a client exposes only pre-merged streams, accept one only if
+                # its audio is explicitly identified as English.
+                muxed_english = [
+                    f for f in formats
+                    if f.get("vcodec") not in (None, "none")
+                    and f.get("acodec") not in (None, "none")
+                    and int(f.get("height") or 0) > 0
+                    and f.get("format_id") is not None
+                    and is_english_audio_format(f)
+                ]
+                if not muxed_english:
+                    logger.warning(
+                        f"Client '{client}' has no identifiable English audio stream; "
+                        "refusing to guess another language."
+                    )
                     continue
-                candidates.append(f)
 
-            if not candidates:
-                continue
-
-            candidates.sort(
-                key=lambda x: (
-                    int(x.get("height") or 0),
-                    int(x.get("width") or 0),
-                    float(x.get("fps") or 0),
-                    float(x.get("vbr") or x.get("tbr") or 0),
-                ),
-                reverse=True,
-            )
-            top = candidates[0]
-            client_height = int(top.get("height") or 0)
-            logger.info(
-                f"Client '{client}' max video: {client_height}p "
-                f"(format_id: {top.get('format_id')})"
-            )
+                top_video = max(muxed_english, key=video_key)
+                client_height = int(top_video.get("height") or 0)
+                video_format_id = str(top_video["format_id"])
+                audio_format_id = None
+                is_muxed = True
+                logger.info(
+                    f"Client '{client}' has {client_height}p pre-merged English format "
+                    f"{video_format_id}."
+                )
 
             if client_height > best_height:
                 best_height = client_height
                 best_client = client
-                best_format_id = str(top.get("format_id"))
+                best_video_format_id = video_format_id
+                best_audio_format_id = audio_format_id
+                best_format_is_muxed = is_muxed
+
         except Exception as err:
             logger.debug(f"Client {client} probe error: {err}")
 
-    if not best_format_id:
+    if not best_video_format_id:
         logger.error(
-            f"No video stream found for {video_url}. All player-client probes failed."
+            f"No video stream with identifiable English audio found for {video_url}. "
+            "All player-client probes failed or exposed only other languages."
         )
-        return None, 0, ""
+        return None, None, 0, "", False
 
-    return best_format_id, best_height, best_client
+    return (
+        best_video_format_id,
+        best_audio_format_id,
+        best_height,
+        best_client,
+        best_format_is_muxed,
+    )
 
 def download_video(
     video_url: str,
@@ -222,6 +299,8 @@ def download_video(
     cookies_path: Optional[str] = None,
     max_resolution: int = 2160,
     preferred_format: Optional[str] = None,
+    preferred_audio_format: Optional[str] = None,
+    preferred_format_has_audio: bool = False,
     expected_height: int = 0,
 ) -> Optional[Tuple[Path, int]]:
     output_template = str(DOWNLOADS_DIR / "%(title).200B [%(id)s] [%(height)sp].%(ext)s")
@@ -236,44 +315,53 @@ def download_video(
         if client not in clients:
             clients.append(client)
 
-    # حداقل کیفیت قابل قبول را روی 480 تنظیم می‌کنیم تا در صورت محدودیت یوتوب، ویدیو رد نشود
+    # Never silently fall back to unrestricted audio, which can be an auto-dub.
     min_acceptable = 480
 
     for client in clients:
         strategies = []
-        if preferred_format:
-            strategies.append((
-                f"{preferred_format}+bestaudio[language=en]/{preferred_format}+bestaudio/{preferred_format}",
-                f"exact probed format {preferred_format}"
-            ))
+
+        # Explicit format IDs are safe only on the client they were probed against.
+        if preferred_format and client == target_client:
+            if preferred_format_has_audio:
+                strategies.append((
+                    preferred_format,
+                    "exact pre-merged English format from probe"
+                ))
+            elif preferred_audio_format:
+                strategies.append((
+                    f"{preferred_format}+{preferred_audio_format}",
+                    "exact probed video format + English audio format"
+                ))
+
+        # Every fallback remains language-restricted. If English is not available,
+        # this selector fails rather than downloading Hindi, Italian, Arabic, etc.
         strategies.append((
-            f"bestvideo[height<={max_resolution}]+bestaudio[language=en]/bestvideo[height<={max_resolution}]+bestaudio/best[height<={max_resolution}]",
-            f"best available <= {max_resolution}p"
-        ))
-        # استراتژی جدید: دانلود فایل یکپارچه برای دور زدن خطای امنیتی یوتوب
-        strategies.append((
-            f"b[height<={max_resolution}]/best",
-            f"pre-merged single file fallback (bypasses PO Token)"
+            f"bestvideo[height<={max_resolution}]+bestaudio[language^=en]/b[height<={max_resolution}][language^=en]",
+            f"best available <= {max_resolution}p with English audio"
         ))
 
         for format_selector, format_desc in strategies:
             cleanup_downloads(video_id)
+            extractor_args = (
+                f"youtube:player_client={client};lang=en"
+                if client != "default"
+                else "youtube:lang=en"
+            )
             cmd = [
                 "yt-dlp", "--no-playlist",
                 "--merge-output-format", "mkv",
-                # Force yt-dlp to prioritize the original-language audio track over auto-dubbed tracks.
                 "--format-sort-force",
                 "-S", "lang",
                 "-f", format_selector,
                 "--js-runtimes", "node",
+                "--extractor-args", extractor_args,
                 "-o", output_template,
                 "--embed-metadata",
                 "--no-mtime",
                 "--no-overwrites",
             ]
-            if client != "default":
-                cmd.extend(["--extractor-args", f"youtube:player_client={client}"])
-                
+
             if cookies_path and os.path.exists(cookies_path):
                 cmd.extend(["--cookies", cookies_path])
             cmd.append(video_url)
@@ -297,8 +385,9 @@ def download_video(
 
             latest_file = max(downloaded_files, key=lambda f: f.stat().st_mtime)
             actual_height = verify_file_resolution(latest_file)
-            
-            # اگر ابزار بررسی نتوانست کیفیت را تشخیص دهد اما فایل حجم منطقی دارد (بیشتر از 5 مگابایت)
+
+            # Keep the existing resolution fallback for substantial files that ffprobe
+            # cannot inspect, without relaxing the audio-language selection.
             if actual_height == 0 and latest_file.stat().st_size > 5 * 1024 * 1024:
                 logger.info("ffprobe returned 0p, but file size is large. Assuming fallback resolution.")
                 actual_height = 720
@@ -318,8 +407,8 @@ def download_video(
             return latest_file, actual_height
 
     logger.error(
-        f"All high-quality download strategies exhausted for {video_url}. "
-        f"No file meeting {min_acceptable}p was accepted."
+        f"Could not download {video_url} with identifiable English audio and at least "
+        f"{min_acceptable}p video. No other-language fallback was used."
     )
     return None
 
@@ -336,15 +425,27 @@ def process_single_video(
     id_match = re.search(r"(?:v=|/)([a-zA-Z0-9_-]{11})", video_url)
     video_id = id_match.group(1) if id_match else None
 
-    best_format_id, available_height, chosen_client = probe_best_format(video_url, cookies_path)
+    (
+        best_format_id,
+        best_audio_format_id,
+        available_height,
+        chosen_client,
+        preferred_format_has_audio,
+    ) = probe_best_format(video_url, cookies_path)
     if not best_format_id or available_height <= 0:
-        logger.error("Could not find a usable video stream from any player client.")
+        logger.error("Could not find a usable video stream with English audio from any player client.")
         return False
 
     requested_max = min(force_quality_limit, available_height)
+    audio_description = (
+        f"pre-merged English audio in format {best_format_id}"
+        if preferred_format_has_audio
+        else f"English audio format {best_audio_format_id}"
+    )
     logger.info(
         f"Highest downloadable resolution found: {available_height}p "
-        f"via {chosen_client}; download limit: {requested_max}p; format: {best_format_id}"
+        f"via {chosen_client}; download limit: {requested_max}p; "
+        f"video format: {best_format_id}; {audio_description}"
     )
 
     existing_entry = existing_drive_files.get(video_id) if video_id else None
@@ -372,6 +473,8 @@ def process_single_video(
         cookies_path=cookies_path,
         max_resolution=requested_max,
         preferred_format=best_format_id,
+        preferred_audio_format=best_audio_format_id,
+        preferred_format_has_audio=preferred_format_has_audio,
         expected_height=available_height,
     )
     if not download_res:
