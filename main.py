@@ -146,8 +146,6 @@ def cleanup_downloads(video_id: str = None):
 
 def is_original_audio_format(fmt: Dict[str, Any]) -> bool:
     """Identify original audio tracks."""
-    # We accept all valid audio formats here. The sorting keys (audio_key/video_key) 
-    # will prioritize the track marked as 'audio_track_default' by YouTube.
     return True
 
 def probe_best_format(
@@ -210,7 +208,6 @@ def probe_best_format(
                 and f.get("format_id") is not None
             ]
 
-            # Prioritize original/default audio track if multiple languages exist
             video_key = lambda f: (
                 1 if f.get("audio_track_default") is True or "original" in str(f.get("format_note") or "").lower() else 0,
                 int(f.get("height") or 0),
@@ -308,7 +305,8 @@ def download_video(
         if client not in clients:
             clients.append(client)
 
-    min_acceptable = 480
+    # کاهش محدودیت کیفیت برای پشتیبانی از ویدیوهای قدیمی
+    min_acceptable = 144
 
     for client in clients:
         strategies = []
@@ -471,9 +469,9 @@ def process_single_video(
 
     downloaded_file, verified_height = download_res
 
-    if verified_height < 480:
+    if verified_height < 144:
         logger.warning(
-            f"Final verification failed: expected at least 480p, "
+            f"Final verification failed: expected at least 144p, "
             f"got {verified_height}p. File will NOT be uploaded."
         )
         try:
