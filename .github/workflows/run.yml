@@ -59,6 +59,7 @@ jobs:
           python main.py
 
       - name: Keep only the latest 5 workflow runs
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
