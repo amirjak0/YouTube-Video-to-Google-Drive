@@ -63,8 +63,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          run_ids=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/run.yml/runs?per_page=100" --jq 'add | .workflow_runs | sort_by(.created_at) | reverse | .[5:] | .[].id')
-          for run_id in $run_ids; do
+          set -euo pipefail
+
+          run_ids="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/run.yml/runs?per_page=100" |
+              jq -s -r '[.[].workflow_runs[]] | sort_by(.created_at) | reverse | .[5:] | .[].id'
+          )"
+
+          if [[ -z "$run_ids" ]]; then
+            echo "No old workflow runs to delete."
+            exit 0
+          fi
+
+          while IFS= read -r run_id; do
+            [[ -z "$run_id" ]] && continue
             echo "Deleting old workflow run: $run_id"
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" || echo "Could not delete run $run_id"
-          done
+            if gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$run_id"; then
+              echo "Deleted workflow run: $run_id"
+            else
+              echo "::warning::Could not delete workflow run: $run_id"
+            fi
+          done <<< "$run_ids"
