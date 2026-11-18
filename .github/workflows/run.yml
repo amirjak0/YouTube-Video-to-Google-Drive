@@ -45,6 +45,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install --upgrade -r requirements.txt
 
+      - name: Start PO Token Provider
+        run: |
+          docker run --name bgutil-provider -d --init \
+            -p 127.0.0.1:4416:4416 \
+            brainicism/bgutil-ytdlp-pot-provider:latest
+
+          echo "Waiting for PO Token server to become ready..."
+          for i in $(seq 1 25); do
+            if curl -fsS http://127.0.0.1:4416/ping >/dev/null 2>&1; then
+              echo "PO Token server is ready."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::PO Token server did not respond on port 4416; continuing anyway."
+
       - name: Run downloader
         env:
           YOUTUBE_PLAYLIST_URL: ${{ secrets.YOUTUBE_PLAYLIST_URL }}
@@ -55,8 +71,18 @@ jobs:
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           UPDATE_EXISTING: ${{ github.event.inputs.update_existing || 'true' }}
           FORCE_QUALITY_LIMIT: ${{ github.event.inputs.force_quality || '2160' }}
+          POT_SERVER_URL: http://127.0.0.1:4416
+          MAX_WORKERS: '1'
+          VIDEO_DELAY_SECONDS: '5'
+          SLEEP_REQUESTS: '2'
+          FORCE_IPV4: 'true'
         run: |
           python main.py
+
+      - name: Stop PO Token Provider
+        if: always()
+        run: |
+          docker rm -f bgutil-provider >/dev/null 2>&1 || true
 
       - name: Keep only the latest 5 workflow runs
         if: always()
